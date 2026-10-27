@@ -85,7 +85,8 @@ let client;
 
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth', clientId: 'tracker' }),
-    puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] },
+    authTimeoutMs: 300000,
+    puppeteer: { headless: true, protocolTimeout: 600000, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] },
     ...(MODE === 'login' && PAIR_PHONE ? { pairWithPhoneNumber: { phoneNumber: PAIR_PHONE, showNotification: true } } : {}),
   });
 
