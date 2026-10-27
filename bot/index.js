@@ -226,6 +226,7 @@ async function collect() {
 
     let all = [];
     try { all = await chat.fetchMessages({ limit: MAX_MESSAGES }); } catch (e) { log(`  ! could not read ${name}: ${e.message || e}`); }
+    await fixMessageIds(g.id, all);
     const recent = all.filter(m => m.timestamp >= since);
     const announce = !!(md.announce || chat.isReadOnly);
     const mine = recent.filter(m => !SYSTEM_TYPES.has(m.type) && (m.fromMe || (me && m.author === me) || (COUNT_ADMIN_POSTS && announce)));
@@ -274,4 +275,26 @@ async function collect() {
   const summary = `Checked ${totalMessages} messages in ${doneGroups} groups` + (left ? `. ${left} groups will be read in the next runs (tip: untick groups you don't need in Choose groups)` : '');
   await status('uploading', { message: 'Saving results', progress: { done: doneGroups, total: tracked.length } });
   return { status: 'ok', communities, messages, totals: { groups: doneGroups, messages: totalMessages, tracked: tracked.length }, summary };
+}
+
+// WhatsApp Web no longer hands over the full message id, which breaks saving messages and reading
+// "Read by" info. Ask WhatsApp Web for the real ids and put them back on each message.
+async function fixMessageIds(chatId, msgs) {
+  if (!msgs.length || msgs.every(m => m.id && m.id._serialized)) return;
+  let real = {};
+  try {
+    real = await client.pupPage.evaluate(async (cid) => {
+      const chat = await window.WWebJS.getChat(cid, { getAsModel: false });
+      const out = {};
+      for (const m of chat.msgs.getModelsArray()) out[m.id.id] = m.id._serialized || m.id.toString();
+      return out;
+    }, chatId);
+  } catch (e) { log('  (could not read message ids: ' + (e.message || e) + ')'); }
+  const ser = w => !w ? '' : typeof w === 'string' ? w : (w._serialized || (w.user + '@' + w.server));
+  for (const m of msgs) {
+    if (!m.id) continue;
+    if (!m.id._serialized) {
+      m.id._serialized = real[m.id.id] || (m.id.fromMe + '_' + ser(m.id.remote) + '_' + m.id.id + (m.id.participant ? '_' + ser(m.id.participant) : ''));
+    }
+  }
 }
