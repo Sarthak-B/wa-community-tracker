@@ -1,0 +1,18 @@
+# Changes (2026-10-28)
+
+## Fixes
+- **New WhatsApp link no longer lost.** The bot writes `bot/.linked_ok` as soon as WhatsApp accepts the login; the workflow saves the session whenever that file exists, even if the first sync fails or times out. A logged-out run never overwrites the last good session. A fresh link is kept open 60 s before closing, on success or error. Reading stops 4 min before the hard timeout so there is always time to upload and save.
+- **Score: read rate counts less and no longer punishes communities.** New weights: 60% clicks per 100 members, 25% replies + reactions per 100 members, 15% read rate (`WEIGHTS` in dashboard.html). A community with no posts from the linked number has no read rate ("–") and is scored on clicks + engagement only, instead of getting 0.
+- **Choose groups:** unticking everything now means "track nothing". The Automatic button saves "automatic", so communities joined later are picked up.
+- **Deleting a link keeps its clicks in the stats** (soft delete via new `links.deleted_at`; the Worker adds the column to existing databases itself).
+- **Re-link during a running sync** is queued instead of ignored.
+- Short links work in any letter case; community names refresh when renamed on WhatsApp; a wrong saved password is cleared instead of sticking.
+
+## Workflow
+- Uses the runner's preinstalled Chrome (no Chromium download each run; saves minutes). Falls back to downloading if missing.
+- Node 22, `actions/checkout@v5`, `actions/setup-node@v5`, `permissions: contents: read`.
+- `LOOKBACK_DAYS`, `MAX_MESSAGES_PER_GROUP`, `COUNT_ADMIN_POSTS` repo variables are now passed to the bot.
+
+## Config / docs
+- wrangler.toml: existing `SHORT_BASE`, `FALLBACK_URL` and database id kept; `GH_BRANCH` documented (commented); GH secrets listed. `wrangler.sb.toml` untouched.
+- README rewritten to match the code (6-hour schedule, link format, all settings, score, GitHub minutes, token expiry).

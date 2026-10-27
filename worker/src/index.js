@@ -19,6 +19,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
     try {
+      if (env.DB && path !== '/' && path !== '/dashboard' && path !== '/t.js' && path !== '/health') await ensureSchema(env);
       if (path === '/' || path === '/dashboard') {
         return new Response(DASHBOARD_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
       }
@@ -53,7 +54,8 @@ export default {
         if (path === '/api/tracking/pause' && request.method === 'POST') return json(await setConfig(env, { enabled: false }));
         if (path === '/api/tracking/groups' && request.method === 'POST') {
           const b = await request.json();
-          return json(await setConfig(env, { tracked_ids: Array.isArray(b.tracked_ids) && b.tracked_ids.length ? b.tracked_ids : null }));
+          // automatic = null (bot picks community groups itself); otherwise exactly the ticked groups, even none
+          return json(await setConfig(env, { tracked_ids: b.automatic ? null : (Array.isArray(b.tracked_ids) ? b.tracked_ids.map(String) : []) }));
         }
         if (path === '/api/stats' && request.method === 'GET') return json(await stats(url, env));
         if (path === '/api/communities' && request.method === 'GET') return json(await listCommunities(env));
@@ -61,7 +63,8 @@ export default {
         if (path === '/api/links' && request.method === 'GET') return json(await listLinks(env));
         if (path === '/api/links' && request.method === 'POST') return json(await createLinks(await request.json(), env, url.origin));
         if (path.startsWith('/api/links/') && request.method === 'DELETE') {
-          await env.DB.prepare('DELETE FROM links WHERE code = ?').bind(path.split('/').pop()).run();
+          // soft delete: the link stops working (goes to FALLBACK_URL) but its past clicks stay in the stats
+          await env.DB.prepare('UPDATE links SET deleted_at = ? WHERE code = ?').bind(now(), decodeURIComponent(path.split('/').pop())).run();
           return json({ ok: true });
         }
         return json({ error: 'not found' }, 404);
@@ -122,10 +125,11 @@ function logClick(code, request, env, ctx) {
 async function handleRedirect(code, request, env, ctx) {
   const fallback = env.FALLBACK_URL || 'https://sb.flexifunnels.com';
   let link = null;
-  try { link = await env.DB.prepare('SELECT destination FROM links WHERE code = ?').bind(code).first(); }
+  // case-insensitive, so a link retyped as Funnel-Agent-Access-K7 still works; an exact match wins
+  try { link = await env.DB.prepare('SELECT code, destination, deleted_at FROM links WHERE code = ? COLLATE NOCASE ORDER BY (code = ?) DESC LIMIT 1').bind(code, code).first(); }
   catch (e) { return Response.redirect(fallback, 302); }
-  if (!link) return Response.redirect(fallback, 302);
-  try { logClick(code, request, env, ctx); } catch (e) {}
+  if (!link || link.deleted_at) return Response.redirect(fallback, 302);
+  try { logClick(link.code, request, env, ctx); } catch (e) {}
   return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store' } });
 }
 
@@ -134,7 +138,7 @@ async function handleRedirect(code, request, env, ctx) {
 async function handleHit(code, request, env, ctx) {
   const headers = { 'content-type': 'image/gif', 'cache-control': 'no-store', 'access-control-allow-origin': '*' };
   if (/^[A-Za-z0-9]{4,16}$/.test(code)) {
-    const link = await env.DB.prepare('SELECT code FROM links WHERE code = ?').bind(code).first();
+    const link = await env.DB.prepare('SELECT code FROM links WHERE code = ? AND deleted_at IS NULL').bind(code).first();
     if (link) logClick(code, request, env, ctx);
   }
   return new Response(GIF, { headers });
@@ -166,6 +170,7 @@ async function listLinks(env) {
     FROM links l
     LEFT JOIN communities c ON c.id = l.community_id
     LEFT JOIN clicks k ON k.code = l.code AND k.is_bot = 0
+    WHERE l.deleted_at IS NULL
     GROUP BY l.code ORDER BY l.created_at DESC, c.name LIMIT 1000`).all();
   return { links: results, short_base: shortBase(env, null) };
 }
@@ -230,8 +235,9 @@ async function ingest(body, env) {
     let id = byChat.get(c.wa_chat_id) || byName.get(String(c.name).toLowerCase());
     if (id) {
       byName.delete(String(c.name).toLowerCase());
-      commStmts.push(env.DB.prepare('UPDATE communities SET wa_chat_id = ?, member_count = ?, updated_at = ? WHERE id = ?')
-        .bind(c.wa_chat_id, Number(c.members) || 0, t, id));
+      // name is refreshed too, so a community renamed on WhatsApp is renamed here
+      commStmts.push(env.DB.prepare('UPDATE communities SET name = ?, wa_chat_id = ?, member_count = ?, updated_at = ? WHERE id = ?')
+        .bind(String(c.name), c.wa_chat_id, Number(c.members) || 0, t, id));
     } else {
       const base = slugify(c.name); id = base; let n = 2;
       while (usedIds.has(id)) id = `${base}-${n++}`;
@@ -352,12 +358,18 @@ async function stats(url, env) {
 }
 
 // ---------- one-click tracking: settings, bot status, GitHub control ----------
-let kvReady = false;
-async function kvTable(env) {
-  if (kvReady) return;
+// Brings an already-deployed database up to date (runs once per Worker instance, costs ~2 queries).
+let schemaReady = false;
+async function ensureSchema(env) {
+  if (schemaReady) return;
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER)').run();
-  kvReady = true;
+  const cols = (await env.DB.prepare('PRAGMA table_info(links)').all()).results.map(r => r.name);
+  if (cols.length && !cols.includes('deleted_at')) {
+    try { await env.DB.prepare('ALTER TABLE links ADD COLUMN deleted_at INTEGER').run(); } catch (e) { /* added by a parallel request */ }
+  }
+  schemaReady = true;
 }
+const kvTable = ensureSchema;
 async function kvGet(env, key, fallback = null) {
   await kvTable(env);
   const row = await env.DB.prepare('SELECT value FROM kv WHERE key = ?').bind(key).first();
@@ -441,16 +453,18 @@ async function trackingState(env) {
 async function startTracking(body, env) {
   const gh = github(env);
   if (!gh) throw new Error('The Start button is not connected to GitHub yet. Add the GH_TOKEN and GH_REPO secrets to the Worker (see the setup guide).');
+  const action = body.action === 'link' ? 'link' : 'sync';
   const run = await gh.latestRun();
-  if (run && run.status !== 'completed') return { ok: true, already_running: true, run };
+  const busy = run && run.status !== 'completed';
+  // a second sync is pointless, but a re-link is queued: GitHub starts it right after the current run
+  if (busy && action === 'sync') return { ok: true, already_running: true, run };
 
   const cfg = await getConfig(env);
-  const action = body.action === 'link' ? 'link' : 'sync';
   let phone = String(body.phone || '').replace(/\D/g, '');
   if (action === 'link' && !phone && body.use_saved_phone !== false) phone = cfg.phone;
   await setConfig(env, { enabled: true, ...(phone ? { phone } : {}) });
 
   await gh.dispatch(action === 'link' ? { mode: 'login', pair_phone: phone } : { mode: 'sync' });
-  await kvSet(env, 'bot_status', { stage: 'queued', mode: action === 'link' ? 'login' : 'sync', message: '', at: now() });
-  return { ok: true, started: action };
+  await kvSet(env, 'bot_status', { stage: 'queued', mode: action === 'link' ? 'login' : 'sync', message: busy ? 'Waiting for the current sync to finish' : '', at: now() });
+  return { ok: true, started: action, queued: !!busy };
 }

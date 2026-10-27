@@ -211,7 +211,7 @@ tr:last-child td { border-bottom: 0; }
           </label>
         </div>
         <div class="tablewrap"><table id="leaderTable"></table></div>
-        <p class="legend-note">Overall score = 50% clicks per 100 members + 30% read rate + 20% replies &amp; reactions per 100 members, each compared to the best community (best = 100). Per-member rates keep big and small communities comparable.</p>
+        <p class="legend-note">Overall score = 60% unique clicks per 100 members + 25% replies &amp; reactions per 100 members + 15% read rate, each compared to the best community (best = 100). Per-member rates keep big and small communities comparable. Read rate only exists for posts sent from the linked number; a community without such posts is scored on clicks and engagement alone.</p>
       </div>
       <div class="grid2">
         <div class="card"><h2 id="barTitle">Overall score by community</h2><p class="hint">Sorted best to weakest</p><div class="chart-box" id="barBox"><canvas id="barChart"></canvas></div></div>
@@ -299,7 +299,7 @@ tr:last-child td { border-bottom: 0; }
 
   async function api(path, opts = {}) {
     const res = await fetch(path, { ...opts, headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
-    if (res.status === 401) { showLogin('Wrong password'); throw new Error('unauthorized'); }
+    if (res.status === 401) { store.set('wct_token', null); token = null; showLogin('Wrong password'); throw new Error('unauthorized'); }
     const body = await res.json();
     if (!res.ok) throw new Error(body.error || 'Request failed');
     return body;
@@ -351,17 +351,25 @@ tr:last-child td { border-bottom: 0; }
     renderSync(); renderKpis(); renderLeader(); renderCharts(); renderCampaigns(); renderMessages(); renderCommChecks(); renderLinkTable();
   }
 
+  // Overall score weights. Read rate counts for less because WhatsApp only gives read info for
+  // posts sent from the linked number, and undercounts in big groups.
+  const WEIGHTS = { clicks: 0.60, reads: 0.15, engagement: 0.25 };
   function computeScores() {
     const cs = data.communities;
     for (const c of cs) {
-      c.read_rate = c.delivered ? c.reads / c.delivered : 0;
+      // null = no posts from the linked number in this period, so there is no read info at all
+      c.read_rate = c.delivered ? c.reads / c.delivered : null;
       c.click_rate = c.members ? c.unique_clicks / c.members * 100 : 0;
       c.engagement = c.members ? (c.replies + c.reactions) / c.members * 100 : 0;
     }
-    const max = k => Math.max(0, ...cs.map(c => c[k]));
+    const max = k => Math.max(0, ...cs.map(c => c[k] || 0));
     const mc = max('click_rate'), mr = max('read_rate'), me = max('engagement');
     for (const c of cs) {
-      c.score = Math.round(100 * (0.5 * (mc ? c.click_rate / mc : 0) + 0.3 * (mr ? c.read_rate / mr : 0) + 0.2 * (me ? c.engagement / me : 0)));
+      // a community without read info is scored on clicks + engagement only, instead of getting 0 for reads
+      const hasReads = c.read_rate != null && mr > 0;
+      const total = WEIGHTS.clicks + WEIGHTS.engagement + (hasReads ? WEIGHTS.reads : 0);
+      const raw = WEIGHTS.clicks * (mc ? c.click_rate / mc : 0) + WEIGHTS.engagement * (me ? c.engagement / me : 0) + (hasReads ? WEIGHTS.reads * c.read_rate / mr : 0);
+      c.score = Math.round(100 * raw / total);
       c.active = c.messages > 0 || c.clicks > 0;
     }
   }
@@ -385,23 +393,25 @@ tr:last-child td { border-bottom: 0; }
   }
 
   const metricLabel = { score: 'Overall score', unique_clicks: 'Unique link clicks', click_rate: 'Clicks per 100 members', read_rate: 'Read rate', engagement: 'Replies + reactions per 100 members', messages: 'Messages sent' };
-  const metricFmt = (k, v) => k === 'read_rate' ? pct(v) : (k === 'click_rate' || k === 'engagement') ? dec(v) : fmt(v);
-  const ranked = () => [...data.communities].filter(c => c.active).sort((a, b) => (b[rankBy] - a[rankBy]) || (b.unique_clicks - a.unique_clicks));
+  const metricFmt = (k, v) => v == null ? '–' : k === 'read_rate' ? pct(v) : (k === 'click_rate' || k === 'engagement') ? dec(v) : fmt(v);
+  // communities without read info sort last when ranking by read rate
+  const mval = (c, k) => c[k] == null ? -1 : c[k];
+  const ranked = () => [...data.communities].filter(c => c.active).sort((a, b) => (mval(b, rankBy) - mval(a, rankBy)) || (b.unique_clicks - a.unique_clicks));
 
   function renderLeader() {
     const rows = ranked();
     if (!rows.length) { $('#leaderTable').innerHTML = '<tr><td class="empty">No data yet. Create tracked links in the Link builder, and run the WhatsApp sync.</td></tr>'; return; }
     const n = rows.length;
-    const maxV = Math.max(...rows.map(r => r[rankBy])) || 1;
+    const maxV = Math.max(...rows.map(r => r[rankBy] || 0)) || 1;
     $('#leaderTable').innerHTML = `<thead><tr><th>#</th><th>Community</th><th class="num">Members</th><th class="num">Messages</th><th class="num">Read rate</th><th class="num">Replies</th><th class="num">Reactions</th><th class="num">Unique clicks</th><th class="num">Clicks / 100 members</th><th>${esc(metricLabel[rankBy])}</th></tr></thead><tbody>` +
       rows.map((c, i) => {
         const top = i < 3 && n > 3, low = i >= n - 2 && n > 4;
-        const v = c[rankBy];
+        const v = c[rankBy] || 0;
         return `<tr><td><span class="rank ${top ? 'top' : low ? 'low' : ''}">${i + 1}</span></td>
           <td><b>${esc(c.name)}</b>${i === 0 && n > 1 ? '<span class="tag top">Best</span>' : ''}${low ? '<span class="tag low">Needs attention</span>' : ''}${!c.connected ? '<div class="muted" style="font-size:12px">Not seen by the WhatsApp bot yet</div>' : ''}</td>
-          <td class="num">${fmt(c.members)}</td><td class="num">${fmt(c.messages)}</td><td class="num">${c.delivered ? pct(c.read_rate) : '–'}</td>
+          <td class="num">${fmt(c.members)}</td><td class="num">${fmt(c.messages)}</td><td class="num"${c.delivered ? '' : ' title="No posts from the linked number in this period, so WhatsApp gives no read info"'}>${c.delivered ? pct(c.read_rate) : '–'}</td>
           <td class="num">${fmt(c.replies)}</td><td class="num">${fmt(c.reactions)}</td><td class="num">${fmt(c.unique_clicks)}</td><td class="num">${c.members ? dec(c.click_rate) : '–'}</td>
-          <td><div class="scorebar"><div class="track"><div class="fill" style="width:${Math.max(2, v / maxV * 100)}%"></div></div><b>${metricFmt(rankBy, v)}</b></div></td></tr>`;
+          <td><div class="scorebar"><div class="track"><div class="fill" style="width:${Math.max(2, v / maxV * 100)}%"></div></div><b>${metricFmt(rankBy, c[rankBy])}</b></div></td></tr>`;
       }).join('') + '</tbody>';
   }
 
@@ -497,7 +507,7 @@ tr:last-child td { border-bottom: 0; }
       `<thead><tr>${th('sent_at', 'Sent')}${th('community', 'Community')}<th>Message</th>${th('campaign', 'Campaign')}${th('reads', 'Reads', 1)}${th('reactions', 'Reactions', 1)}${th('replies', 'Replies', 1)}${th('unique_clicks', 'Unique clicks', 1)}</tr></thead><tbody>` +
       rows.slice(0, 500).map(m => `<tr><td style="white-space:nowrap">${new Date(m.sent_at * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
         <td>${esc(name(m.community_id))}</td><td><div class="msg" title="${esc(m.body)}">${esc(m.body)}</div></td><td>${m.campaign ? esc(m.campaign) : '<span class="muted">no tracked link</span>'}</td>
-        <td class="num">${fmt(m.reads)}${m.delivered ? `<span class="muted"> / ${fmt(m.delivered)}</span>` : ''}</td><td class="num">${fmt(m.reactions)}</td><td class="num">${fmt(m.replies)}</td><td class="num">${m.campaign ? fmt(m.unique_clicks) : '–'}</td></tr>`).join('') + '</tbody>';
+        <td class="num">${m.delivered ? `${fmt(m.reads)}<span class="muted"> / ${fmt(m.delivered)}</span>` : '<span class="muted" title="Sent from another admin number; WhatsApp only shows read info for the linked number">–</span>'}</td><td class="num">${fmt(m.reactions)}</td><td class="num">${fmt(m.replies)}</td><td class="num">${m.campaign ? fmt(m.unique_clicks) : '–'}</td></tr>`).join('') + '</tbody>';
     $('#msgTable thead')?.addEventListener('click', e => { const t = e.target.closest('th[data-sort]'); if (!t) return; sortMsg = { key: t.dataset.sort, dir: sortMsg.key === t.dataset.sort ? -sortMsg.dir : -1 }; renderMessages(); });
   }
 
@@ -561,7 +571,7 @@ tr:last-child td { border-bottom: 0; }
   }
   $('#linkTable').addEventListener('click', async e => {
     const b = e.target.closest('[data-del]'); if (!b) return;
-    if (!confirm('Remove this link from the list? Anyone who still clicks it will be sent to your main website instead.')) return;
+    if (!confirm('Remove this link from the list? Anyone who still clicks it will be sent to your main website instead. Clicks it already got stay in the stats.')) return;
     try { await api('/api/links/' + b.dataset.del, { method: 'DELETE' }); load(); } catch (err) { toast(err.message); }
   });
 
@@ -690,13 +700,16 @@ tr:last-child td { border-bottom: 0; }
     const btns = document.querySelectorAll('#trackCard button'); btns.forEach(b => b.disabled = true);
     try {
       const r = await api('/api/tracking/start', { method: 'POST', body: JSON.stringify({ action, phone: phone || '', use_saved_phone: false }) });
-      toast(r.already_running ? 'A sync is already running' : action === 'link' ? 'Starting… your code appears here in 1–2 minutes' : 'Sync started');
+      toast(r.already_running ? 'A sync is already running' : r.queued ? 'Linking starts as soon as the current sync finishes' : action === 'link' ? 'Starting… your code appears here in 1–2 minutes' : 'Sync started');
     } catch (e) { toast(e.message); }
     loadTracking();
   }
 
   // ---- choose groups ----
+  // autoMode = let the bot pick community announcement groups itself (also picks up communities joined later)
+  let autoMode = false;
   function openGroups() {
+    autoMode = ts.config.tracked_ids == null;
     groupsSel = new Set(ts.groups.list.filter(g => g.tracked).map(g => g.id));
     $('#groupsPanel').classList.remove('hidden');
     renderGroups();
@@ -707,17 +720,22 @@ tr:last-child td { border-bottom: 0; }
     const list = shownGroups();
     $('#groupList').innerHTML = !ts.groups.list.length ? '<div class="muted">Groups appear here after the first sync.</div>' :
       list.map(g => `<label><input type="checkbox" value="${esc(g.id)}" ${groupsSel.has(g.id) ? 'checked' : ''}> <span>${esc(g.name)} <span class="muted" style="font-size:12px">${fmt(g.members)} members${g.auto ? ' · suggested' : ''}</span></span></label>`).join('');
-    $('#groupCount').textContent = `${groupsSel.size} of ${ts.groups.list.length} groups ticked`;
+    renderGroupCount();
   }
-  $('#groupList').addEventListener('change', e => { if (e.target.type === 'checkbox') { e.target.checked ? groupsSel.add(e.target.value) : groupsSel.delete(e.target.value); $('#groupCount').textContent = `${groupsSel.size} of ${ts.groups.list.length} groups ticked`; } });
+  function renderGroupCount() {
+    $('#groupCount').textContent = autoMode
+      ? `Automatic: ${groupsSel.size} community groups now, new communities are added by themselves`
+      : `${groupsSel.size} of ${ts.groups.list.length} groups ticked` + (groupsSel.size ? '' : ' - nothing will be tracked');
+  }
+  $('#groupList').addEventListener('change', e => { if (e.target.type === 'checkbox') { autoMode = false; e.target.checked ? groupsSel.add(e.target.value) : groupsSel.delete(e.target.value); renderGroupCount(); } });
   $('#groupSearch').oninput = renderGroups;
-  $('#groupsAll').onclick = () => { shownGroups().forEach(g => groupsSel.add(g.id)); renderGroups(); };
-  $('#groupsNone').onclick = () => { shownGroups().forEach(g => groupsSel.delete(g.id)); renderGroups(); };
-  $('#groupsAuto').onclick = () => { groupsSel = new Set(ts.groups.list.filter(g => g.auto).map(g => g.id)); renderGroups(); toast('Ticked the suggested community groups'); };
+  $('#groupsAll').onclick = () => { autoMode = false; shownGroups().forEach(g => groupsSel.add(g.id)); renderGroups(); };
+  $('#groupsNone').onclick = () => { autoMode = false; shownGroups().forEach(g => groupsSel.delete(g.id)); renderGroups(); };
+  $('#groupsAuto').onclick = () => { autoMode = true; groupsSel = new Set(ts.groups.list.filter(g => g.auto).map(g => g.id)); renderGroups(); toast('Automatic: the bot picks community groups itself'); };
   $('#groupsClose').onclick = () => $('#groupsPanel').classList.add('hidden');
   $('#groupsSave').onclick = async () => {
     try {
-      await api('/api/tracking/groups', { method: 'POST', body: JSON.stringify({ tracked_ids: [...groupsSel] }) });
+      await api('/api/tracking/groups', { method: 'POST', body: JSON.stringify(autoMode ? { automatic: true } : { tracked_ids: [...groupsSel] }) });
       $('#groupsPanel').classList.add('hidden');
       await start2('sync');
     } catch (e) { toast(e.message); }

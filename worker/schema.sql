@@ -11,12 +11,14 @@ CREATE TABLE IF NOT EXISTS communities (
 );
 
 CREATE TABLE IF NOT EXISTS links (
-  code          TEXT PRIMARY KEY,          -- the /l/<code> part
+  code          TEXT PRIMARY KEY,          -- the /<code> part of the short link
   community_id  TEXT NOT NULL,
   campaign      TEXT NOT NULL,
   destination   TEXT NOT NULL,
-  created_at    INTEGER NOT NULL
+  created_at    INTEGER NOT NULL,
+  deleted_at    INTEGER                    -- set when removed on the dashboard; old clicks stay in the stats
 );
+-- Existing databases get deleted_at added automatically by the Worker (ensureSchema).
 CREATE INDEX IF NOT EXISTS idx_links_comm ON links(community_id);
 CREATE INDEX IF NOT EXISTS idx_links_campaign ON links(campaign);
 

@@ -3,7 +3,7 @@ name: WhatsApp community sync
 
 on:
   schedule:
-    - cron: "17 */6 * * *"   # every 6 hours (UTC). Keeps GitHub free minutes in budget for private repos.
+    - cron: "17 */6 * * *"   # every 6 hours (UTC) = 05:47, 11:47, 17:47, 23:47 IST. If you change this, also change nextScheduled() in worker/src/dashboard.html
   workflow_dispatch:
     inputs:
       mode:
@@ -14,6 +14,10 @@ on:
       pair_phone:
         description: "For login only: WhatsApp number with country code (e.g. 919876543210). Empty = QR code on the dashboard."
         required: false
+
+# The job only needs to read the repo; the session cache uses its own runner token
+permissions:
+  contents: read
 
 # Never run two jobs on the same WhatsApp session at once
 concurrency:
@@ -31,14 +35,30 @@ jobs:
       INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
       SESSION_KEY: ${{ secrets.SESSION_KEY }}
       GROUP_NAME_FILTER: ${{ vars.GROUP_NAME_FILTER }}
+      LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS }}
+      MAX_MESSAGES_PER_GROUP: ${{ vars.MAX_MESSAGES_PER_GROUP }}
+      COUNT_ADMIN_POSTS: ${{ vars.COUNT_ADMIN_POSTS }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: bot/package-lock.json
+
+      # GitHub's Ubuntu runners already have Chrome. Using it skips a ~150 MB Chromium download every run
+      # (saves free minutes). If it is ever missing, puppeteer downloads its own as before.
+      - name: Use the runner's Chrome
+        run: |
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || true)"
+          if [ -n "$CHROME" ]; then
+            echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
+            echo "PUPPETEER_SKIP_DOWNLOAD=true" >> "$GITHUB_ENV"
+            "$CHROME" --version
+          else
+            echo "No Chrome on the runner, puppeteer will download Chromium"
+          fi
 
       - name: Install
         working-directory: bot
@@ -69,18 +89,23 @@ jobs:
         working-directory: bot
         run: node index.js
 
+      # Saved whenever WhatsApp accepted the login during this run (the bot writes .linked_ok),
+      # even if the sync afterwards failed or timed out. A fresh link is never thrown away,
+      # and a logged-out session never overwrites the last good one.
       - name: Encrypt session
-        if: success()
+        id: enc
+        if: always()
         working-directory: bot
         run: |
+          if [ ! -f .linked_ok ] || [ ! -d .wwebjs_auth ]; then echo "Not logged in during this run - keeping the previous saved session"; exit 0; fi
           # drop browser caches, keep only what's needed to stay logged in
           find .wwebjs_auth -type d \( -name "Cache" -o -name "Code Cache" -o -name "GPUCache" -o -name "CacheStorage" -o -name "ScriptCache" \) -prune -exec rm -rf {} + || true
-          if [ ! -d .wwebjs_auth ]; then echo "Nothing to save"; exit 0; fi
           tar cz .wwebjs_auth | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:SESSION_KEY -out ../session.tar.gz.enc
           ls -lh ../session.tar.gz.enc
+          echo "saved=true" >> "$GITHUB_OUTPUT"
 
       - name: Save WhatsApp session
-        if: success() && hashFiles('session.tar.gz.enc') != ''
+        if: always() && steps.enc.outputs.saved == 'true'
         uses: actions/cache/save@v4
         with:
           path: session.tar.gz.enc
