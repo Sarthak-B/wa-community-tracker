@@ -8,6 +8,7 @@
 //   MODE=sync   -> normal run (default)
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const ChatFactory = require('whatsapp-web.js/src/factories/ChatFactory');
 
 const env = process.env;
 const MODE = (env.MODE || 'sync').toLowerCase();
@@ -139,9 +140,39 @@ function isCommunityAnnouncementGroup(chat) {
   return !!(md.defaultSubgroup || (md.parentGroup && md.announce));
 }
 
+// WhatsApp Web's own "get all chats" fails completely if even one chat can't be read.
+// This reads chats one by one and skips bad ones.
+async function getGroupChats() {
+  try {
+    return (await client.getChats()).filter(c => c.isGroup);
+  } catch (e) {
+    log('Normal chat list failed (' + (e.message || e) + '), reading chats one by one instead');
+  }
+  const { chats, skipped, total } = await client.pupPage.evaluate(async () => {
+    const out = []; let skipped = 0;
+    const all = window.require('WAWebCollections').Chat.getModelsArray();
+    for (const chat of all) {
+      if (!chat.groupMetadata) continue;
+      try {
+        const m = await Promise.race([window.WWebJS.getChatModel(chat), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
+        if (m) { out.push(m); continue; }
+      } catch (e) {}
+      try {
+        const model = chat.serialize();
+        model.isGroup = true; model.isMuted = false; model.formattedTitle = chat.formattedTitle;
+        model.groupMetadata = chat.groupMetadata.serialize(); model.isReadOnly = chat.groupMetadata.announce; model.lastMessage = null;
+        delete model.msgs; delete model.msgUnsyncedButtonReplyMsgs; delete model.unsyncedButtonReplies;
+        out.push(model);
+      } catch (e) { skipped++; }
+    }
+    return { chats: out, skipped, total: all.length };
+  });
+  log('Read ' + chats.length + ' groups from ' + total + ' chats (' + skipped + ' skipped)');
+  return chats.map(c => ChatFactory.create(client, c)).filter(c => c && c.isGroup);
+}
+
 async function collect() {
-  const chats = await client.getChats();
-  const groups = chats.filter(c => c.isGroup);
+  const groups = await getGroupChats();
   const me = client.info && client.info.wid && client.info.wid._serialized;
   const picked = Array.isArray(config.tracked_ids) && config.tracked_ids.length ? new Set(config.tracked_ids) : null;
 
