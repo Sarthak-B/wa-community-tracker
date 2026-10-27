@@ -8,6 +8,8 @@
 - **Re-link during a running sync** is queued instead of ignored.
 - Short links work in any letter case; community names refresh when renamed on WhatsApp; a wrong saved password is cleared instead of sticking.
 
+- **Newest community first.** The bot reads and uploads the most recently made community first, then goes further back (uses the parent community's creation date). Safety net: a group not read for `STALE_HOURS` (default 24) goes first so older ones still get covered. The dashboard's group list is also shown newest first.
+
 ## Workflow
 - Uses the runner's preinstalled Chrome (no Chromium download each run; saves minutes). Falls back to downloading if missing.
 - Node 22, `actions/checkout@v5`, `actions/setup-node@v5`, `permissions: contents: read`.

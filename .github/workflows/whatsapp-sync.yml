@@ -38,6 +38,7 @@ jobs:
       LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS }}
       MAX_MESSAGES_PER_GROUP: ${{ vars.MAX_MESSAGES_PER_GROUP }}
       COUNT_ADMIN_POSTS: ${{ vars.COUNT_ADMIN_POSTS }}
+      STALE_HOURS: ${{ vars.STALE_HOURS }}
     steps:
       - uses: actions/checkout@v5
 

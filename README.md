@@ -77,6 +77,7 @@ Generate random strings with: `openssl rand -hex 24`
    - `GROUP_NAME_FILTER`: only if auto-detection misses your communities. A regex on group names, e.g. `FlexiFunnels|Creators|Course Sellers`
    - `MAX_MESSAGES_PER_GROUP`: messages loaded per group each run (default 150)
    - `COUNT_ADMIN_POSTS`: `false` to count only posts from the linked number (default `true` = every admin post in announcement groups)
+   - `STALE_HOURS`: groups are read **newest community first**, then further back. A group not read for this many hours is read first anyway, so old communities are never skipped forever when a run runs out of time (default `24`, `0` = strictly newest first)
 
 ## 3. Link the WhatsApp account (one time)
 

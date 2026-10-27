@@ -38,6 +38,8 @@ const LOGIN_TIMEOUT_MS = 6 * 60 * 1000;
 // Stop reading this long before the hard timeout, leaving time to upload and save the session.
 const SAFETY_MARGIN_MS = 4 * 60 * 1000;
 const LOOKBACK_OVERRIDE = Number(env.LOOKBACK_DAYS) || null;
+// Groups are read newest community first. One not read for this many hours is read first anyway (0 = off).
+const STALE_HOURS = env.STALE_HOURS === undefined || env.STALE_HOURS === '' ? 24 : Number(env.STALE_HOURS) || 0;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -206,19 +208,32 @@ async function collect() {
   // null = automatic (community announcement groups); a list = exactly those groups, even if empty
   const picked = Array.isArray(config.tracked_ids) ? new Set(config.tracked_ids) : null;
 
+  // when each community was made: the parent community's creation time if known, else the group's own
+  const creationById = {};
+  for (const g of groups) creationById[g.id._serialized] = Number((g.groupMetadata || {}).creation) || 0;
+  const createdAt = md => {
+    const parentId = md.parentGroup && (md.parentGroup._serialized || md.parentGroup);
+    return (parentId && creationById[parentId]) || Number(md.creation) || 0;
+  };
+
   const list = groups.map(g => {
     const md = g.groupMetadata || {};
     const auto = GROUP_FILTER ? GROUP_FILTER.test(g.name || '') : isCommunityAnnouncementGroup(g);
     const tracked = picked ? picked.has(g.id._serialized) : auto;
     const members = (md.participants || []).length || Number(md.size) || 0;
-    return { chat: g, id: g.id._serialized, name: g.name || '(no name)', members, auto, tracked };
-  }).sort((a, b) => (b.tracked - a.tracked) || (b.members - a.members));
+    return { chat: g, id: g.id._serialized, name: g.name || '(no name)', members, auto, tracked, created: createdAt(md) };
+  }).sort((a, b) => (b.tracked - a.tracked) || (b.created - a.created) || (b.members - a.members));
 
-  log(`Found ${groups.length} groups. (tracked = *)`);
-  for (const g of list) log(`  ${g.tracked ? '*' : ' '} ${g.name}  [members=${g.members}]`);
-  // groups read longest ago (or never) go first, so big lists are covered across several runs
+  log(`Found ${groups.length} groups, newest first. (tracked = *)`);
+  for (const g of list) log(`  ${g.tracked ? '*' : ' '} ${g.name}  [members=${g.members}, made ${g.created ? new Date(g.created * 1000).toISOString().slice(0, 10) : '?'}]`);
+  // Newest community first, then further back. Safety net: a group not read for STALE_HOURS
+  // (or never read) jumps the queue, so old communities are never skipped forever when a run runs out of time.
   const lastRead = config.last_read || {};
-  const tracked = list.filter(g => g.tracked).sort((a, b) => (lastRead[a.id] || 0) - (lastRead[b.id] || 0));
+  const staleBefore = Math.floor(Date.now() / 1000) - STALE_HOURS * 3600;
+  const isStale = g => STALE_HOURS > 0 && (lastRead[g.id] || 0) < staleBefore;
+  const tracked = list.filter(g => g.tracked).sort((a, b) => (isStale(b) - isStale(a)) || (b.created - a.created));
+  const staleCount = tracked.filter(isStale).length;
+  if (staleCount && staleCount < tracked.length) log(`${staleCount} groups not read in ${STALE_HOURS}h go first`);
   await status('reading', {
     message: tracked.length ? `Reading ${tracked.length} groups` : 'No groups selected. Choose groups on the dashboard.',
     progress: { done: 0, total: tracked.length },
