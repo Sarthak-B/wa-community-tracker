@@ -1,9 +1,9 @@
 name: WhatsApp community sync
-# Started automatically every 3 hours, or by the Start tracking / Sync now buttons on the dashboard.
+# Started automatically every 6 hours, or by the Start tracking / Sync now buttons on the dashboard.
 
 on:
   schedule:
-    - cron: "17 */3 * * *"   # every 3 hours (UTC). Change to "17 */6 * * *" for every 6 hours.
+    - cron: "17 */6 * * *"   # every 6 hours (UTC). Keeps GitHub free minutes in budget for private repos.
   workflow_dispatch:
     inputs:
       mode:

@@ -4,7 +4,7 @@ Tracks every message we post to our WhatsApp communities and ranks the communiti
 
 | Number | Where it comes from |
 |---|---|
-| Messages sent, reads, delivered | WhatsApp "Message info", read by the bot every 3 hours |
+| Messages sent, reads, delivered | WhatsApp "Message info", read by the bot every 6 hours |
 | Replies & reactions | Read by the bot (replies = messages that quote ours) |
 | Link clicks | Our own short links (`/l/abc123`), one per community, counted when clicked |
 | Members | Group size, read by the bot |
@@ -71,7 +71,7 @@ Use an account that is an **admin in every community**. We recommend a second ad
 4. On that phone: WhatsApp → Settings → Linked devices → Link a device → *Link with phone number instead* → enter the code
 5. The job waits 60 s, then saves the encrypted session. Done.
 
-From now on it runs every 3 hours by itself. Run it manually with mode = `sync` to test straight away. The log lists every group found, with `*` next to the tracked ones.
+From now on it runs every 6 hours by itself. Run it manually with mode = `sync` to test straight away. The log lists every group found, with `*` next to the tracked ones.
 
 If the dashboard ever shows **"WhatsApp logged out"**, repeat step 3. WhatsApp also unlinks all linked devices if the main phone itself is not used for about 14 days, so keep that phone active.
 
@@ -105,7 +105,7 @@ npx wrangler secret put GH_REPO       # e.g. Sarthak-B/wa-community-tracker
 npm run deploy
 ```
 
-On the dashboard you can then: **Start tracking** (link WhatsApp + first sync), **Sync now**, **Choose groups**, **Pause**, and **Re-link WhatsApp**. Scheduled runs every 3 hours skip themselves while tracking is paused.
+On the dashboard you can then: **Start tracking** (link WhatsApp + first sync), **Sync now**, **Choose groups**, **Pause**, and **Re-link WhatsApp**. Scheduled runs every 6 hours skip themselves while tracking is paused.
 
 ## Limits and risks
 

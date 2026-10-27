@@ -14,12 +14,19 @@ const env = process.env;
 const MODE = (env.MODE || 'sync').toLowerCase();
 const TRACKER_URL = (env.TRACKER_URL || '').replace(/\/+$/, '');
 const INGEST_TOKEN = env.INGEST_TOKEN || '';
-const MAX_MESSAGES = Number(env.MAX_MESSAGES_PER_GROUP || 300);
+const MAX_MESSAGES = Number(env.MAX_MESSAGES_PER_GROUP || 150);
 const GROUP_FILTER = env.GROUP_NAME_FILTER ? new RegExp(env.GROUP_NAME_FILTER, 'i') : null;
 const PAIR_PHONE = (env.PAIR_PHONE || '').replace(/\D/g, '');
 const RUN_ID = env.GITHUB_RUN_ID || null;
 const EVENT = env.GITHUB_EVENT_NAME || 'manual';
-const HARD_TIMEOUT_MS = Number(env.HARD_TIMEOUT_MIN || 20) * 60 * 1000;
+const HARD_TIMEOUT_MS = Number(env.HARD_TIMEOUT_MIN || 21) * 60 * 1000;
+// Stop starting new groups after this long; groups not reached are read first next run.
+const READ_BUDGET_MS = Number(env.READ_BUDGET_MIN || 13) * 60 * 1000;
+const UPLOAD_EVERY = 5; // save results to the dashboard every 5 groups
+// In announcement-only groups only admins can post, so count every admin post as a team message.
+// Read counts are only available for messages sent from the linked number itself.
+const COUNT_ADMIN_POSTS = (env.COUNT_ADMIN_POSTS || 'true') !== 'false';
+const SYSTEM_TYPES = new Set(['notification', 'e2e_notification', 'gp2', 'revoked', 'notification_template', 'call_log', 'protocol']);
 const LOGIN_TIMEOUT_MS = 6 * 60 * 1000;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -122,11 +129,11 @@ let client;
       const wait = 60000 - (Date.now() - readyAt);
       if (wait > 0) await sleep(wait);
       await finish(0, report, 'done', {
-        message: `Checked ${report.messages.length} messages in ${report.communities.length} groups`,
-        progress: { done: report.communities.length, total: report.communities.length },
+        message: report.summary,
+        progress: { done: report.totals.groups, total: report.totals.tracked },
       });
     } catch (e) {
-      log('Sync error:', e.stack || e.message);
+      log('Sync error:', e && (e.stack || e.message || e));
       await finish(1, { status: 'error', note: e.message, communities: [], messages: [] }, 'error', { message: 'Something went wrong while reading messages: ' + e.message });
     }
   });
@@ -140,8 +147,8 @@ function isCommunityAnnouncementGroup(chat) {
   return !!(md.defaultSubgroup || (md.parentGroup && md.announce));
 }
 
-// WhatsApp Web's own "get all chats" fails completely if even one chat can't be read.
-// This reads chats one by one and skips bad ones.
+// WhatsApp Web's own "get all chats" fails completely if even one chat can't be read
+// (e.g. a group you left or an odd community). This reads chats one by one and skips bad ones.
 async function getGroupChats() {
   try {
     return (await client.getChats()).filter(c => c.isGroup);
@@ -159,15 +166,19 @@ async function getGroupChats() {
       } catch (e) {}
       try {
         const model = chat.serialize();
-        model.isGroup = true; model.isMuted = false; model.formattedTitle = chat.formattedTitle;
-        model.groupMetadata = chat.groupMetadata.serialize(); model.isReadOnly = chat.groupMetadata.announce; model.lastMessage = null;
+        model.isGroup = true;
+        model.isMuted = false;
+        model.formattedTitle = chat.formattedTitle;
+        model.groupMetadata = chat.groupMetadata.serialize();
+        model.isReadOnly = chat.groupMetadata.announce;
+        model.lastMessage = null;
         delete model.msgs; delete model.msgUnsyncedButtonReplyMsgs; delete model.unsyncedButtonReplies;
         out.push(model);
       } catch (e) { skipped++; }
     }
     return { chats: out, skipped, total: all.length };
   });
-  log('Read ' + chats.length + ' groups from ' + total + ' chats (' + skipped + ' skipped)');
+  log(`Read ${chats.length} groups from ${total} chats (${skipped} could not be read and were skipped)`);
   return chats.map(c => ChatFactory.create(client, c)).filter(c => c && c.isGroup);
 }
 
@@ -180,12 +191,15 @@ async function collect() {
     const md = g.groupMetadata || {};
     const auto = GROUP_FILTER ? GROUP_FILTER.test(g.name || '') : isCommunityAnnouncementGroup(g);
     const tracked = picked ? picked.has(g.id._serialized) : auto;
-    return { chat: g, id: g.id._serialized, name: g.name || '(no name)', members: (md.participants || []).length, auto, tracked };
+    const members = (md.participants || []).length || Number(md.size) || 0;
+    return { chat: g, id: g.id._serialized, name: g.name || '(no name)', members, auto, tracked };
   }).sort((a, b) => (b.tracked - a.tracked) || (b.members - a.members));
 
   log(`Found ${groups.length} groups. (tracked = *)`);
   for (const g of list) log(`  ${g.tracked ? '*' : ' '} ${g.name}  [members=${g.members}]`);
-  const tracked = list.filter(g => g.tracked);
+  // groups read longest ago (or never) go first, so big lists are covered across several runs
+  const lastRead = config.last_read || {};
+  const tracked = list.filter(g => g.tracked).sort((a, b) => (lastRead[a.id] || 0) - (lastRead[b.id] || 0));
   await status('reading', {
     message: tracked.length ? `Reading ${tracked.length} groups` : 'No groups selected. Choose groups on the dashboard.',
     progress: { done: 0, total: tracked.length },
@@ -193,10 +207,12 @@ async function collect() {
   });
 
   const since = Math.floor(Date.now() / 1000) - Number(config.lookback_days || 14) * 86400;
-  const communities = [];
-  const messages = [];
+  const started = Date.now();
+  let communities = [], messages = [];
+  let doneGroups = 0, totalMessages = 0;
 
   for (const [i, g] of tracked.entries()) {
+    if (Date.now() - started > READ_BUDGET_MS) { log(`Time budget reached after ${i} groups; the rest are read next run`); break; }
     const chat = g.chat;
     const md = chat.groupMetadata || {};
     let name = g.name;
@@ -209,9 +225,11 @@ async function collect() {
     communities.push({ wa_chat_id: g.id, name, members: g.members });
 
     let all = [];
-    try { all = await chat.fetchMessages({ limit: MAX_MESSAGES }); } catch (e) { log(`  ! could not read ${name}: ${e.message}`); }
+    try { all = await chat.fetchMessages({ limit: MAX_MESSAGES }); } catch (e) { log(`  ! could not read ${name}: ${e.message || e}`); }
     const recent = all.filter(m => m.timestamp >= since);
-    const mine = recent.filter(m => m.fromMe || (me && m.author === me));
+    const announce = !!(md.announce || chat.isReadOnly);
+    const mine = recent.filter(m => !SYSTEM_TYPES.has(m.type) && (m.fromMe || (me && m.author === me) || (COUNT_ADMIN_POSTS && announce)));
+    const byMe = mine.filter(m => m.fromMe).length;
 
     const replyCount = {};
     for (const m of recent) {
@@ -220,12 +238,12 @@ async function collect() {
       if (q) replyCount[q] = (replyCount[q] || 0) + 1;
     }
 
-    log(`  ${name}: ${mine.length} of our messages`);
+    const newest = all.length ? new Date(Math.max(...all.map(m => m.timestamp)) * 1000).toISOString().slice(0, 10) : '-';
+    log(`  ${name}: loaded ${all.length} (newest ${newest}), last ${config.lookback_days || 14} days ${recent.length}, counted ${mine.length} (${byMe} sent from this number)${announce ? ' [announcements]' : ''}`);
     for (const m of mine) {
-      if (['notification', 'e2e_notification', 'gp2', 'revoked'].includes(m.type)) continue;
       let delivered = 0, reads = 0, reactions = 0;
       try {
-        const info = await m.getInfo();
+        const info = m.fromMe ? await m.getInfo() : null;
         if (info) {
           reads = (info.read || []).length + (info.played || []).length;
           delivered = (info.delivery || []).length + reads;
@@ -239,10 +257,21 @@ async function collect() {
       } catch {}
       const body = m.body || (m._data && (m._data.caption || m._data.text)) || `[${m.type}]`;
       messages.push({ id: m.id._serialized, wa_chat_id: g.id, sent_at: m.timestamp, body, delivered, reads, reactions, replies: replyCount[m.id.id] || 0 });
-      await sleep(250);
+      totalMessages++;
+      await sleep(150);
     }
-    await status('reading', { message: `Read ${name}`, progress: { done: i + 1, total: tracked.length } });
+    doneGroups = i + 1;
+
+    // save progress so nothing is lost if the run is stopped
+    if (doneGroups % UPLOAD_EVERY === 0) {
+      try { await api('/api/ingest', { partial: true, status: 'ok', communities, messages }); communities = []; messages = []; }
+      catch (e) { log('Partial upload failed, will retry at the end:', e.message); }
+    }
+    await status('reading', { message: `Read ${name}`, progress: { done: doneGroups, total: tracked.length } });
   }
-  await status('uploading', { message: `Saving ${messages.length} messages`, progress: { done: tracked.length, total: tracked.length } });
-  return { status: 'ok', communities, messages };
+
+  const left = tracked.length - doneGroups;
+  const summary = `Checked ${totalMessages} messages in ${doneGroups} groups` + (left ? `. ${left} groups will be read in the next runs (tip: untick groups you don't need in Choose groups)` : '');
+  await status('uploading', { message: 'Saving results', progress: { done: doneGroups, total: tracked.length } });
+  return { status: 'ok', communities, messages, totals: { groups: doneGroups, messages: totalMessages, tracked: tracked.length }, summary };
 }

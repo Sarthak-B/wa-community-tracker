@@ -28,7 +28,10 @@ export default {
       // --- endpoints the bot calls ---
       if (path.startsWith('/api/bot/')) {
         if (!authorized(request, env.INGEST_TOKEN)) return json({ error: 'unauthorized' }, 401);
-        if (path === '/api/bot/config' && request.method === 'GET') return json(await getConfig(env));
+        if (path === '/api/bot/config' && request.method === 'GET') {
+          const { results } = await env.DB.prepare('SELECT wa_chat_id, updated_at FROM communities WHERE wa_chat_id IS NOT NULL').all();
+          return json({ ...(await getConfig(env)), last_read: Object.fromEntries(results.map(r => [r.wa_chat_id, r.updated_at])) });
+        }
         if (path === '/api/bot/status' && request.method === 'POST') return json(await botStatus(await request.json(), env));
         return json({ error: 'not found' }, 404);
       }
@@ -141,8 +144,9 @@ async function createLinks(body, env, origin) {
   if (!ids.length) throw new Error('Pick at least one community');
   const created = [];
   const stmts = [];
+  const comms = new Map((await env.DB.prepare('SELECT id, name FROM communities').all()).results.map(r => [r.id, r]));
   for (const id of ids) {
-    const comm = await env.DB.prepare('SELECT id, name FROM communities WHERE id = ?').bind(id).first();
+    const comm = comms.get(id);
     if (!comm) continue;
     const dest = new URL(destination);
     if (body.add_utm !== false) {
@@ -162,31 +166,38 @@ async function createLinks(body, env, origin) {
 
 // ---------- bot ingest ----------
 async function ingest(body, env) {
+  // Uses as few database calls as possible (Cloudflare's free plan allows ~50 per request).
   const t = now();
+  const all = (await env.DB.prepare('SELECT id, name, wa_chat_id FROM communities').all()).results;
+  const byChat = new Map(all.filter(r => r.wa_chat_id).map(r => [r.wa_chat_id, r.id]));
+  const byName = new Map(all.filter(r => !r.wa_chat_id).map(r => [String(r.name).toLowerCase(), r.id]));
+  const usedIds = new Set(all.map(r => r.id));
   const chatToCommunity = {};
+  const commStmts = [];
   for (const c of body.communities || []) {
-    if (!c.wa_chat_id || !c.name) continue;
-    let row = await env.DB.prepare('SELECT id FROM communities WHERE wa_chat_id = ?').bind(c.wa_chat_id).first();
-    if (!row) row = await env.DB.prepare('SELECT id FROM communities WHERE lower(name) = lower(?) AND wa_chat_id IS NULL').bind(c.name).first();
-    if (row) {
-      await env.DB.prepare('UPDATE communities SET wa_chat_id = ?, member_count = ?, updated_at = ? WHERE id = ?')
-        .bind(c.wa_chat_id, Number(c.members) || 0, t, row.id).run();
-      chatToCommunity[c.wa_chat_id] = row.id;
+    if (!c.wa_chat_id || !c.name || chatToCommunity[c.wa_chat_id]) continue;
+    let id = byChat.get(c.wa_chat_id) || byName.get(String(c.name).toLowerCase());
+    if (id) {
+      byName.delete(String(c.name).toLowerCase());
+      commStmts.push(env.DB.prepare('UPDATE communities SET wa_chat_id = ?, member_count = ?, updated_at = ? WHERE id = ?')
+        .bind(c.wa_chat_id, Number(c.members) || 0, t, id));
     } else {
-      const id = await uniqueSlug(env, slugify(c.name));
-      await env.DB.prepare('INSERT INTO communities (id, name, wa_chat_id, member_count, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-        .bind(id, c.name, c.wa_chat_id, Number(c.members) || 0, t, t).run();
-      chatToCommunity[c.wa_chat_id] = id;
+      const base = slugify(c.name); id = base; let n = 2;
+      while (usedIds.has(id)) id = `${base}-${n++}`;
+      usedIds.add(id);
+      commStmts.push(env.DB.prepare('INSERT INTO communities (id, name, wa_chat_id, member_count, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+        .bind(id, c.name, c.wa_chat_id, Number(c.members) || 0, t, t));
     }
+    chatToCommunity[c.wa_chat_id] = id;
   }
 
   const known = new Set((await env.DB.prepare('SELECT code FROM links').all()).results.map(r => r.code));
-  const stmts = [];
+  const msgStmts = [];
   for (const m of body.messages || []) {
-    const communityId = chatToCommunity[m.wa_chat_id];
+    const communityId = chatToCommunity[m.wa_chat_id] || byChat.get(m.wa_chat_id);
     if (!communityId || !m.id) continue;
     const codes = [...new Set([...String(m.body || '').matchAll(CODE_RE)].map(x => x[1]).filter(c => known.has(c)))];
-    stmts.push(env.DB.prepare(`
+    msgStmts.push(env.DB.prepare(`
       INSERT INTO messages (id, community_id, sent_at, body, link_codes, delivered, reads, reactions, replies, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
@@ -196,10 +207,15 @@ async function ingest(body, env) {
       .bind(m.id, communityId, Number(m.sent_at) || t, String(m.body || '').slice(0, 2000), codes.join(','),
         Number(m.delivered) || 0, Number(m.reads) || 0, Number(m.reactions) || 0, Number(m.replies) || 0, t));
   }
-  for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
-  await env.DB.prepare('INSERT INTO sync_runs (ran_at, status, groups, messages, note) VALUES (?,?,?,?,?)')
-    .bind(t, String(body.status || 'ok'), (body.communities || []).length, stmts.length, body.note ? String(body.note).slice(0, 500) : null).run();
-  return { ok: true, communities: Object.keys(chatToCommunity).length, messages: stmts.length };
+  const stmts = [...commStmts, ...msgStmts];
+  if (!body.partial) {
+    const totals = body.totals || {};
+    stmts.push(env.DB.prepare('INSERT INTO sync_runs (ran_at, status, groups, messages, note) VALUES (?,?,?,?,?)')
+      .bind(t, String(body.status || 'ok'), Number(totals.groups ?? (body.communities || []).length), Number(totals.messages ?? msgStmts.length),
+        body.note ? String(body.note).slice(0, 500) : (body.summary ? String(body.summary).slice(0, 500) : null)));
+  }
+  for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+  return { ok: true, communities: Object.keys(chatToCommunity).length, messages: msgStmts.length };
 }
 
 // ---------- stats ----------

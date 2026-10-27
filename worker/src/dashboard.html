@@ -381,7 +381,7 @@ tr:last-child td { border-bottom: 0; }
 
   const metricLabel = { score: 'Overall score', unique_clicks: 'Unique link clicks', click_rate: 'Clicks per 100 members', read_rate: 'Read rate', engagement: 'Replies + reactions per 100 members', messages: 'Messages sent' };
   const metricFmt = (k, v) => k === 'read_rate' ? pct(v) : (k === 'click_rate' || k === 'engagement') ? dec(v) : fmt(v);
-  const ranked = () => [...data.communities].filter(c => c.active || c.members).sort((a, b) => (b[rankBy] - a[rankBy]) || (b.unique_clicks - a.unique_clicks));
+  const ranked = () => [...data.communities].filter(c => c.active).sort((a, b) => (b[rankBy] - a[rankBy]) || (b.unique_clicks - a.unique_clicks));
 
   function renderLeader() {
     const rows = ranked();
@@ -541,11 +541,11 @@ tr:last-child td { border-bottom: 0; }
   let ts = null, pollTimer = null, wasActive = false, qrShown = null, groupsSel = null, lastKey = '', forceLink = false;
 
   function nextScheduled() {
-    // workflow cron: minute 17 of every 3rd hour (UTC)
+    // workflow cron: minute 17 of every 6th hour (UTC)
     const d = new Date(); d.setUTCSeconds(0, 0);
-    for (let i = 0; i < 4 * 60; i++) {
+    for (let i = 0; i < 7 * 60; i++) {
       d.setUTCMinutes(d.getUTCMinutes() + 1);
-      if (d.getUTCMinutes() === 17 && d.getUTCHours() % 3 === 0) return d;
+      if (d.getUTCMinutes() === 17 && d.getUTCHours() % 6 === 0) return d;
     }
     return null;
   }
@@ -600,7 +600,7 @@ tr:last-child td { border-bottom: 0; }
     if (!ts.linked || forceLink) {
       el.innerHTML = `${err}<div class="hero">
           <div><h2>Start tracking your WhatsApp communities</h2>
-            <div class="sub">One click links your WhatsApp (admin account), reads every message you've sent in your communities, and fills this dashboard. After that it re-checks automatically every 3 hours.</div>
+            <div class="sub">One click links your WhatsApp (admin account), reads every message you've sent in your communities, and fills this dashboard. After that it re-checks automatically every 6 hours.</div>
             <div class="field" style="margin:14px 0 0;max-width:340px"><span>WhatsApp number with country code</span>
               <input type="text" id="phoneIn" inputmode="numeric" placeholder="e.g. 919876543210" value="">
               <span class="muted" style="font-weight:400">You'll get a code to type into WhatsApp. Leave empty to scan a QR code instead.</span></div>
