@@ -1,0 +1,16 @@
+{
+  "name": "wa-community-tracker-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Reads WhatsApp community announcement messages and uploads engagement stats",
+  "main": "index.js",
+  "scripts": {
+    "sync": "node index.js",
+    "login": "MODE=login node index.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}

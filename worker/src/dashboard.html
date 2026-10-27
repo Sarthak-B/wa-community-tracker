@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Community Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f4f4f2; --surface: #fcfcfb; --surface-2: #f0efec; --border: #e3e2de;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #8a8984;
+  --accent: #2a78d6; --accent-ink: #ffffff;
+  --good: #0f7b3e; --good-bg: #e3f4ea; --bad: #b42318; --bad-bg: #fde8e6; --warn: #8a5a00; --warn-bg: #fdf1d6;
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#8a8984;
+  --seq-0:#f0efec; --seq-1:#cde2fb; --seq-2:#9ec5f4; --seq-3:#6da7ec; --seq-4:#3987e5; --seq-5:#256abf;
+  --grid: #e9e8e4;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --border: #2f2f2c;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+    --accent: #3987e5; --accent-ink: #ffffff;
+    --good: #5fd08f; --good-bg: #183323; --bad: #ff8a80; --bad-bg: #3a1a17; --warn: #f2c14e; --warn-bg: #3a2d10;
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#8f8e86;
+    --seq-0:#232321; --seq-1:#104281; --seq-2:#184f95; --seq-3:#1c5cab; --seq-4:#2a78d6; --seq-5:#3987e5;
+    --grid: #2a2a28;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --border: #2f2f2c;
+  --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86;
+  --accent: #3987e5; --accent-ink: #ffffff;
+  --good: #5fd08f; --good-bg: #183323; --bad: #ff8a80; --bad-bg: #3a1a17; --warn: #f2c14e; --warn-bg: #3a2d10;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#8f8e86;
+  --seq-0:#232321; --seq-1:#104281; --seq-2:#184f95; --seq-3:#1c5cab; --seq-4:#2a78d6; --seq-5:#3987e5;
+  --grid: #2a2a28;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, system-ui, -apple-system, Segoe UI, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px 16px 60px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; justify-content: space-between; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--text-2); font-size: 13px; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--surface-2); color: var(--text-2); }
+.pill.ok { background: var(--good-bg); color: var(--good); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.btn { border: 1px solid var(--border); background: var(--surface); padding: 7px 12px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.small { padding: 4px 9px; font-size: 12px; }
+.btn.ghost { border-color: transparent; background: transparent; }
+select, input[type=text], input[type=url], input[type=password], input[type=search] { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+.seg { display: inline-flex; background: var(--surface-2); border-radius: 9px; padding: 3px; }
+.seg button { border: 0; background: transparent; padding: 5px 11px; border-radius: 7px; cursor: pointer; color: var(--text-2); font-weight: 500; font-size: 13px; }
+.seg button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 18px; overflow-x: auto; }
+nav.tabs button { border: 0; background: none; padding: 10px 14px; cursor: pointer; color: var(--text-2); font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap; }
+nav.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+.card h2 { font-size: 15px; margin: 0 0 2px; }
+.card .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.kpi .label { color: var(--text-2); font-size: 12px; font-weight: 500; }
+.kpi .value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.kpi .note { color: var(--muted); font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-size: 12px; font-weight: 500; color: var(--text-2); padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; cursor: default; }
+th.num, td.num { text-align: right; white-space: nowrap; }
+th[data-sort] { cursor: pointer; }
+th[data-sort]:hover { color: var(--text); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+.rank { width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; font-weight: 600; font-size: 12px; background: var(--surface-2); color: var(--text-2); }
+.rank.top { background: var(--good-bg); color: var(--good); }
+.rank.low { background: var(--bad-bg); color: var(--bad); }
+.tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; font-weight: 500; margin-left: 6px; white-space: nowrap; }
+.tag.top { background: var(--good-bg); color: var(--good); }
+.tag.low { background: var(--bad-bg); color: var(--bad); }
+.scorebar { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+.scorebar .track { flex: 1; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.scorebar .fill { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.scorebar b { width: 28px; text-align: right; font-weight: 600; }
+.heat { text-align: center; font-weight: 500; border-radius: 6px; padding: 7px 8px; min-width: 64px; }
+.msg { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted { color: var(--muted); }
+.chart-box { position: relative; height: 300px; }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+.checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+.checks label { display: flex; gap: 8px; align-items: center; padding: 4px; border-radius: 6px; cursor: pointer; }
+.checks label:hover { background: var(--surface-2); }
+.field { display: grid; gap: 4px; margin-bottom: 12px; }
+.field > span { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.result-link { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.result-link code { font-size: 13px; color: var(--accent); word-break: break-all; }
+#login { max-width: 360px; margin: 12vh auto; }
+.hidden { display: none !important; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.legend-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div id="login" class="card hidden">
+    <h2>Community Tracker</h2>
+    <p class="hint">Enter the dashboard password to continue.</p>
+    <form id="loginForm">
+      <div class="field"><input id="pw" type="password" placeholder="Password" autocomplete="current-password" required></div>
+      <button class="btn primary" style="width:100%">Open dashboard</button>
+      <p id="loginErr" class="sub" style="color:var(--bad)"></p>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <header>
+      <div>
+        <h1>WhatsApp Community Tracker</h1>
+        <div class="sub" id="syncInfo">Loading…</div>
+      </div>
+      <div class="row">
+        <div class="seg" id="period">
+          <button data-days="7">7 days</button><button data-days="30" class="on">30 days</button><button data-days="90">90 days</button><button data-days="0">All time</button>
+        </div>
+        <button class="btn" id="refresh" title="Reload data">Refresh</button>
+        <button class="btn ghost" id="themeBtn" title="Toggle light / dark">Theme</button>
+        <button class="btn ghost" id="logout">Log out</button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="leader" class="on">Community leaderboard</button>
+      <button data-tab="campaigns">Campaigns</button>
+      <button data-tab="messages">Messages</button>
+      <button data-tab="links">Link builder</button>
+    </nav>
+
+    <!-- LEADERBOARD -->
+    <section id="tab-leader">
+      <div class="kpis" id="kpis"></div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <div><h2>Which community performs best</h2><p class="hint" style="margin:0">Ranked from best to weakest for the selected period.</p></div>
+          <label class="row sub">Rank by
+            <select id="rankBy">
+              <option value="score">Overall score</option>
+              <option value="unique_clicks">Unique link clicks</option>
+              <option value="click_rate">Clicks per 100 members</option>
+              <option value="read_rate">Read rate</option>
+              <option value="engagement">Replies + reactions per 100 members</option>
+              <option value="messages">Messages sent</option>
+            </select>
+          </label>
+        </div>
+        <div class="tablewrap"><table id="leaderTable"></table></div>
+        <p class="legend-note">Overall score = 50% clicks per 100 members + 30% read rate + 20% replies &amp; reactions per 100 members, each compared to the best community (best = 100). Per-member rates keep big and small communities comparable.</p>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2 id="barTitle">Overall score by community</h2><p class="hint">Sorted best to weakest</p><div class="chart-box" id="barBox"><canvas id="barChart"></canvas></div></div>
+        <div class="card"><h2>Link clicks per day</h2><p class="hint">Top 5 communities by clicks, the rest grouped as Others</p><div class="chart-box"><canvas id="trendChart"></canvas></div></div>
+      </div>
+    </section>
+
+    <!-- CAMPAIGNS -->
+    <section id="tab-campaigns" class="hidden">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:8px">
+          <div><h2>Same post, different communities</h2><p class="hint" style="margin:0">Each row is one campaign (one link sent to many communities). The strongest blue in each row is the community that responded best.</p></div>
+          <div class="seg" id="campMetric"><button data-m="unique_clicks" class="on">Unique clicks</button><button data-m="rate">Clicks / 100 members</button><button data-m="reads">Reads</button></div>
+        </div>
+        <div class="tablewrap" id="campWrap"></div>
+      </div>
+    </section>
+
+    <!-- MESSAGES -->
+    <section id="tab-messages" class="hidden">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:10px">
+          <div><h2>Every message we sent</h2><p class="hint" style="margin:0">Read counts come from WhatsApp's message info; clicks come from tracked links in the message.</p></div>
+          <div class="row"><input type="search" id="msgSearch" placeholder="Search text…"><select id="msgComm"><option value="">All communities</option></select></div>
+        </div>
+        <div class="tablewrap"><table id="msgTable"></table></div>
+      </div>
+    </section>
+
+    <!-- LINK BUILDER -->
+    <section id="tab-links" class="hidden">
+      <div class="grid2">
+        <div class="card">
+          <h2>Create tracked links</h2>
+          <p class="hint">One short link per community, so every click is credited to the right community. Paste each link into that community's message.</p>
+          <form id="linkForm">
+            <label class="field"><span>Campaign name</span><input type="text" id="campaign" placeholder="e.g. Diwali webinar invite" required></label>
+            <label class="field"><span>Where the link should go</span><input type="url" id="dest" placeholder="https://…" required></label>
+            <label class="row sub" style="margin-bottom:12px"><input type="checkbox" id="utm" checked> Add UTM tags (shows up in Google Analytics / page stats)</label>
+            <div class="field"><span class="row" style="justify-content:space-between">Communities <button type="button" class="btn small" id="selAll">Select all</button></span><div class="checks" id="commChecks"></div></div>
+            <div class="row" style="margin-bottom:14px"><input type="text" id="newComm" placeholder="Add a community by name" style="flex:1"><button type="button" class="btn" id="addComm">Add</button></div>
+            <button class="btn primary">Create links</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between"><h2>Your new links</h2><button class="btn small hidden" id="copyAll">Copy all</button></div>
+          <p class="hint">Ready to paste</p>
+          <div id="newLinks"><div class="empty">Links you create appear here.</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>All tracked links</h2><p class="hint">Click counts exclude WhatsApp link-preview fetches and bots.</p>
+        <div class="tablewrap"><table id="linkTable"></table></div>
+      </div>
+    </section>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
+  };
+  let token = store.get('wct_token');
+  let days = Number(store.get('wct_days') || 30);
+  let data = null, links = [], communities = [];
+  let rankBy = 'score', campMetric = 'unique_clicks';
+  let sortMsg = { key: 'sent_at', dir: -1 };
+  let charts = {};
+
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = n => (n ?? 0).toLocaleString('en-IN');
+  const pct = n => isFinite(n) ? (n * 100).toFixed(1) + '%' : '–';
+  const dec = n => isFinite(n) ? n.toFixed(1) : '–';
+  const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const ago = t => { const s = Date.now() / 1000 - t; if (s < 90) return 'just now'; if (s < 3600) return Math.round(s / 60) + ' min ago'; if (s < 86400) return Math.round(s / 3600) + ' h ago'; return Math.round(s / 86400) + ' days ago'; };
+  const toast = msg => { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1600); };
+  const copy = async text => { try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { prompt('Copy:', text); } };
+
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { ...opts, headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
+    if (res.status === 401) { showLogin('Wrong password'); throw new Error('unauthorized'); }
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || 'Request failed');
+    return body;
+  }
+
+  function showLogin(err) { $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); $('#loginErr').textContent = err || ''; }
+  $('#loginForm').onsubmit = e => { e.preventDefault(); token = $('#pw').value; store.set('wct_token', token); start(); };
+  $('#logout').onclick = () => { store.set('wct_token', null); token = null; showLogin(); };
+  $('#themeBtn').onclick = () => {
+    const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+    store.set('wct_theme', document.documentElement.dataset.theme);
+    renderCharts();
+  };
+  if (store.get('wct_theme')) document.documentElement.dataset.theme = store.get('wct_theme');
+
+  // tabs
+  $('#tabs').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+    document.querySelectorAll('section[id^=tab-]').forEach(s => s.classList.toggle('hidden', s.id !== 'tab-' + b.dataset.tab));
+    store.set('wct_tab', b.dataset.tab);
+    if (b.dataset.tab === 'leader') renderCharts();
+  };
+  $('#period').onclick = e => { const b = e.target.closest('button'); if (!b) return; days = Number(b.dataset.days); store.set('wct_days', days); load(); };
+  $('#refresh').onclick = () => load();
+  $('#rankBy').onchange = e => { rankBy = e.target.value; renderLeader(); renderCharts(); };
+  $('#campMetric').onclick = e => { const b = e.target.closest('button'); if (!b) return; campMetric = b.dataset.m; document.querySelectorAll('#campMetric button').forEach(x => x.classList.toggle('on', x === b)); renderCampaigns(); };
+  $('#msgSearch').oninput = renderMessages;
+  $('#msgComm').onchange = renderMessages;
+
+  async function start() {
+    if (!token) return showLogin();
+    $('#login').classList.add('hidden');
+    $('#app').classList.remove('hidden');
+    const tab = store.get('wct_tab'); if (tab) document.querySelector(`#tabs button[data-tab="${tab}"]`)?.click();
+    await load();
+  }
+
+  async function load() {
+    document.querySelectorAll('#period button').forEach(b => b.classList.toggle('on', Number(b.dataset.days) === days));
+    try {
+      [data, { links }, { communities }] = await Promise.all([api('/api/stats?days=' + days), api('/api/links'), api('/api/communities')]);
+    } catch (e) { if (e.message !== 'unauthorized') toast(e.message); return; }
+    computeScores();
+    renderSync(); renderKpis(); renderLeader(); renderCharts(); renderCampaigns(); renderMessages(); renderCommChecks(); renderLinkTable();
+  }
+
+  function computeScores() {
+    const cs = data.communities;
+    for (const c of cs) {
+      c.read_rate = c.delivered ? c.reads / c.delivered : 0;
+      c.click_rate = c.members ? c.unique_clicks / c.members * 100 : 0;
+      c.engagement = c.members ? (c.replies + c.reactions) / c.members * 100 : 0;
+    }
+    const max = k => Math.max(0, ...cs.map(c => c[k]));
+    const mc = max('click_rate'), mr = max('read_rate'), me = max('engagement');
+    for (const c of cs) {
+      c.score = Math.round(100 * (0.5 * (mc ? c.click_rate / mc : 0) + 0.3 * (mr ? c.read_rate / mr : 0) + 0.2 * (me ? c.engagement / me : 0)));
+      c.active = c.messages > 0 || c.clicks > 0;
+    }
+  }
+
+  function renderSync() {
+    const s = data.last_sync;
+    const el = $('#syncInfo');
+    if (!s) { el.innerHTML = '<span class="pill warn">Bot has not synced yet</span> Link clicks are tracked already.'; return; }
+    const cls = s.status === 'ok' ? (Date.now() / 1000 - s.ran_at > 8 * 3600 ? 'warn' : 'ok') : 'bad';
+    const label = s.status === 'ok' ? `Last WhatsApp sync ${ago(s.ran_at)}` : s.status === 'logged_out' ? 'WhatsApp logged out – run the GitHub workflow in login mode' : 'Last sync failed';
+    el.innerHTML = `<span class="pill ${cls}">${esc(label)}</span> ${s.status === 'ok' ? `${s.groups} communities · ${s.messages} messages checked` : esc(s.note || '')}`;
+  }
+
+  function renderKpis() {
+    const cs = data.communities;
+    const sum = k => cs.reduce((s, c) => s + (c[k] || 0), 0);
+    const members = sum('members'), reads = sum('reads'), delivered = sum('delivered');
+    const tiles = [
+      ['Messages sent', fmt(sum('messages')), `across ${cs.filter(c => c.messages).length} communities`],
+      ['Total reads', fmt(reads), delivered ? pct(reads / delivered) + ' read rate' : 'from WhatsApp read receipts'],
+      ['Unique link clicks', fmt(sum('unique_clicks')), fmt(sum('clicks')) + ' total clicks'],
+      ['Replies + reactions', fmt(sum('replies') + sum('reactions')), `${fmt(sum('replies'))} replies · ${fmt(sum('reactions'))} reactions`],
+      ['Clicks per 100 members', members ? dec(sum('unique_clicks') / members * 100) : '–', fmt(members) + ' members in total'],
+    ];
+    $('#kpis').innerHTML = tiles.map(([l, v, n]) => `<div class="kpi"><div class="label">${l}</div><div class="value">${v}</div><div class="note">${n}</div></div>`).join('');
+  }
+
+  const metricLabel = { score: 'Overall score', unique_clicks: 'Unique link clicks', click_rate: 'Clicks per 100 members', read_rate: 'Read rate', engagement: 'Replies + reactions per 100 members', messages: 'Messages sent' };
+  const metricFmt = (k, v) => k === 'read_rate' ? pct(v) : (k === 'click_rate' || k === 'engagement') ? dec(v) : fmt(v);
+  const ranked = () => [...data.communities].filter(c => c.active || c.members).sort((a, b) => (b[rankBy] - a[rankBy]) || (b.unique_clicks - a.unique_clicks));
+
+  function renderLeader() {
+    const rows = ranked();
+    if (!rows.length) { $('#leaderTable').innerHTML = '<tr><td class="empty">No data yet. Create tracked links in the Link builder, and run the WhatsApp sync.</td></tr>'; return; }
+    const n = rows.length;
+    const maxV = Math.max(...rows.map(r => r[rankBy])) || 1;
+    $('#leaderTable').innerHTML = `<thead><tr><th>#</th><th>Community</th><th class="num">Members</th><th class="num">Messages</th><th class="num">Read rate</th><th class="num">Replies</th><th class="num">Reactions</th><th class="num">Unique clicks</th><th class="num">Clicks / 100 members</th><th>${esc(metricLabel[rankBy])}</th></tr></thead><tbody>` +
+      rows.map((c, i) => {
+        const top = i < 3 && n > 3, low = i >= n - 2 && n > 4;
+        const v = c[rankBy];
+        return `<tr><td><span class="rank ${top ? 'top' : low ? 'low' : ''}">${i + 1}</span></td>
+          <td><b>${esc(c.name)}</b>${i === 0 && n > 1 ? '<span class="tag top">Best</span>' : ''}${low ? '<span class="tag low">Needs attention</span>' : ''}${!c.connected ? '<div class="muted" style="font-size:12px">Not seen by the WhatsApp bot yet</div>' : ''}</td>
+          <td class="num">${fmt(c.members)}</td><td class="num">${fmt(c.messages)}</td><td class="num">${c.delivered ? pct(c.read_rate) : '–'}</td>
+          <td class="num">${fmt(c.replies)}</td><td class="num">${fmt(c.reactions)}</td><td class="num">${fmt(c.unique_clicks)}</td><td class="num">${c.members ? dec(c.click_rate) : '–'}</td>
+          <td><div class="scorebar"><div class="track"><div class="fill" style="width:${Math.max(2, v / maxV * 100)}%"></div></div><b>${metricFmt(rankBy, v)}</b></div></td></tr>`;
+      }).join('') + '</tbody>';
+  }
+
+  function chartDefaults() {
+    Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+    Chart.defaults.font.size = 12;
+    Chart.defaults.color = css('--text-2');
+    Chart.defaults.borderColor = css('--grid');
+  }
+  const tooltip = () => ({ backgroundColor: css('--surface'), titleColor: css('--text'), bodyColor: css('--text-2'), borderColor: css('--border'), borderWidth: 1, padding: 10, boxPadding: 4, usePointStyle: true });
+
+  function renderCharts() {
+    if (!data || !window.Chart || $('#tab-leader').classList.contains('hidden')) return;
+    chartDefaults();
+    Object.values(charts).forEach(c => c.destroy()); charts = {};
+
+    // ranked bar chart (single series, one hue)
+    const rows = ranked();
+    $('#barTitle').textContent = metricLabel[rankBy] + ' by community';
+    $('#barBox').style.height = Math.max(220, rows.length * 30 + 40) + 'px';
+    charts.bar = new Chart($('#barChart'), {
+      type: 'bar',
+      data: { labels: rows.map(r => r.name), datasets: [{ data: rows.map(r => rankBy === 'read_rate' ? +(r.read_rate * 100).toFixed(1) : +(+r[rankBy]).toFixed(1)), backgroundColor: css('--s1'), borderRadius: { topRight: 4, bottomRight: 4 }, borderSkipped: 'start', barThickness: 16 }] },
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { ...tooltip(), callbacks: { label: ctx => ' ' + metricLabel[rankBy] + ': ' + (rankBy === 'read_rate' ? ctx.raw + '%' : ctx.raw.toLocaleString('en-IN')) } } },
+        scales: { x: { beginAtZero: true, grid: { color: css('--grid') }, border: { display: false } }, y: { grid: { display: false }, border: { display: false }, ticks: { color: css('--text') } } } },
+    });
+
+    // daily clicks: top 5 + Others
+    const totals = {};
+    for (const r of data.daily_clicks) totals[r.community_id] = (totals[r.community_id] || 0) + r.clicks;
+    const top = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 5).map(x => x[0]);
+    const seen = data.daily_clicks.map(r => r.day).sort();
+    const dayList = [];
+    if (seen.length) { const end = new Date(seen[seen.length - 1] + 'T00:00:00Z'); for (let d = new Date(seen[0] + 'T00:00:00Z'); d <= end; d.setUTCDate(d.getUTCDate() + 1)) dayList.push(d.toISOString().slice(0, 10)); }
+    const name = id => (data.communities.find(c => c.id === id) || {}).name || id;
+    const series = [...top, '__other'].map((id, i) => ({
+      label: id === '__other' ? 'Others' : name(id),
+      data: dayList.map(d => data.daily_clicks.filter(r => r.day === d && (id === '__other' ? !top.includes(r.community_id) : r.community_id === id)).reduce((s, r) => s + r.clicks, 0)),
+      borderColor: css('--s' + (id === '__other' ? 6 : i + 1)), backgroundColor: css('--s' + (id === '__other' ? 6 : i + 1)),
+      borderWidth: 2, borderDash: id === '__other' ? [5, 4] : [], pointStyle: id === '__other' ? 'rectRot' : 'circle', pointRadius: dayList.length > 20 ? 0 : 3, pointHoverRadius: 5, tension: 0,
+    })).filter(s => s.data.some(v => v > 0));
+    charts.trend = new Chart($('#trendChart'), {
+      type: 'line',
+      data: { labels: dayList.map(d => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })), datasets: series },
+      options: { maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 8, color: css('--text-2') } }, tooltip: tooltip() },
+        scales: { y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: css('--grid') }, border: { display: false } }, x: { grid: { display: false }, border: { display: false } } } },
+    });
+    if (!series.length) { const ctx = $('#trendChart').getContext('2d'); ctx.fillStyle = css('--muted'); ctx.textAlign = 'center'; ctx.fillText('No clicks in this period yet', $('#trendChart').width / 2 / devicePixelRatio, 120); }
+  }
+
+  function renderCampaigns() {
+    const camps = data.campaigns;
+    if (!camps.length) { $('#campWrap').innerHTML = '<div class="empty">No campaigns in this period. Create links in the Link builder to start comparing communities.</div>'; return; }
+    const commIds = [...new Set(camps.flatMap(c => Object.keys(c.cells)))];
+    const comm = Object.fromEntries(data.communities.map(c => [c.id, c]));
+    // order communities by total clicks across campaigns, best first
+    const tot = id => camps.reduce((s, c) => s + ((c.cells[id] || {}).unique_clicks || 0), 0);
+    commIds.sort((a, b) => tot(b) - tot(a));
+    const val = (cell, id) => !cell ? null : campMetric === 'rate' ? (comm[id]?.members ? cell.unique_clicks / comm[id].members * 100 : 0) : cell[campMetric];
+    const show = v => v == null ? '–' : campMetric === 'rate' ? dec(v) : fmt(v);
+    const steps = ['--seq-1', '--seq-2', '--seq-3', '--seq-4', '--seq-5'];
+    let html = `<table><thead><tr><th>Campaign</th><th>Best community</th><th>Weakest</th>${commIds.map(id => `<th class="num">${esc(comm[id]?.name || id)}</th>`).join('')}</tr></thead><tbody>`;
+    for (const c of camps) {
+      const vals = commIds.map(id => [id, val(c.cells[id], id)]).filter(x => x[1] != null);
+      const sorted = [...vals].sort((a, b) => b[1] - a[1]);
+      const max = sorted.length ? sorted[0][1] : 0;
+      const best = sorted.length && max > 0 ? comm[sorted[0][0]]?.name : '–';
+      const worst = sorted.length > 1 && max > 0 ? comm[sorted[sorted.length - 1][0]]?.name : '–';
+      html += `<tr><td style="min-width:170px"><b>${esc(c.campaign)}</b><div class="muted" style="font-size:12px">${isFinite(c.created_at) ? new Date(c.created_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}</div></td><td style="min-width:140px"><b>${esc(best)}</b></td><td class="muted" style="min-width:130px">${esc(worst)}</td>` +
+        commIds.map(id => {
+          const v = val(c.cells[id], id);
+          if (v == null) return '<td class="num muted">–</td>';
+          const r = max ? v / max : 0;
+          const step = v <= 0 ? null : steps[Math.min(4, Math.floor(r * 4.999))];
+          const dark = step && r > 0.6;
+          return `<td><div class="heat" title="${esc(comm[id]?.name || id)}: ${show(v)}" style="background:var(${step || '--seq-0'});color:${dark ? '#fff' : 'var(--text)'}">${show(v)}</div></td>`;
+        }).join('') + '</tr>';
+    }
+    $('#campWrap').innerHTML = html + '</tbody></table>';
+  }
+
+  function renderMessages() {
+    const sel = $('#msgComm'), cur = sel.value;
+    sel.innerHTML = '<option value="">All communities</option>' + data.communities.filter(c => c.messages).map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
+    sel.value = cur;
+    const q = $('#msgSearch').value.toLowerCase();
+    const name = id => (data.communities.find(c => c.id === id) || {}).name || id;
+    let rows = data.messages.filter(m => (!sel.value || m.community_id === sel.value) && (!q || (m.body || '').toLowerCase().includes(q)));
+    rows.sort((a, b) => { const k = sortMsg.key; const x = k === 'community' ? name(a.community_id) : a[k], y = k === 'community' ? name(b.community_id) : b[k]; return (x > y ? 1 : x < y ? -1 : 0) * sortMsg.dir; });
+    const th = (k, l, num) => `<th data-sort="${k}" class="${num ? 'num' : ''}">${l}${sortMsg.key === k ? (sortMsg.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`;
+    $('#msgTable').innerHTML = !rows.length ? '<tr><td class="empty">No messages yet. They appear after the WhatsApp bot syncs.</td></tr>' :
+      `<thead><tr>${th('sent_at', 'Sent')}${th('community', 'Community')}<th>Message</th>${th('campaign', 'Campaign')}${th('reads', 'Reads', 1)}${th('reactions', 'Reactions', 1)}${th('replies', 'Replies', 1)}${th('unique_clicks', 'Unique clicks', 1)}</tr></thead><tbody>` +
+      rows.slice(0, 500).map(m => `<tr><td style="white-space:nowrap">${new Date(m.sent_at * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</td>
+        <td>${esc(name(m.community_id))}</td><td><div class="msg" title="${esc(m.body)}">${esc(m.body)}</div></td><td>${m.campaign ? esc(m.campaign) : '<span class="muted">no tracked link</span>'}</td>
+        <td class="num">${fmt(m.reads)}${m.delivered ? `<span class="muted"> / ${fmt(m.delivered)}</span>` : ''}</td><td class="num">${fmt(m.reactions)}</td><td class="num">${fmt(m.replies)}</td><td class="num">${m.campaign ? fmt(m.unique_clicks) : '–'}</td></tr>`).join('') + '</tbody>';
+    $('#msgTable thead')?.addEventListener('click', e => { const t = e.target.closest('th[data-sort]'); if (!t) return; sortMsg = { key: t.dataset.sort, dir: sortMsg.key === t.dataset.sort ? -sortMsg.dir : -1 }; renderMessages(); });
+  }
+
+  // ---- link builder ----
+  function renderCommChecks() {
+    const checked = new Set([...document.querySelectorAll('#commChecks input:checked')].map(i => i.value));
+    $('#commChecks').innerHTML = communities.length ? communities.map(c => `<label><input type="checkbox" value="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="muted" style="font-size:12px">${c.member_count ? fmt(c.member_count) : ''}</span></label>`).join('')
+      : '<div class="muted">No communities yet. Add one below, or run the WhatsApp sync to import them automatically.</div>';
+  }
+  $('#selAll').onclick = () => { const boxes = [...document.querySelectorAll('#commChecks input')]; const all = boxes.every(b => b.checked); boxes.forEach(b => b.checked = !all); };
+  $('#addComm').onclick = async () => {
+    const name = $('#newComm').value.trim(); if (!name) return;
+    try { const r = await api('/api/communities', { method: 'POST', body: JSON.stringify({ name }) }); ({ communities } = await api('/api/communities')); renderCommChecks(); const box = document.querySelector(`#commChecks input[value="${r.id}"]`); if (box) box.checked = true; $('#newComm').value = ''; toast('Community added'); } catch (e) { toast(e.message); }
+  };
+  let lastCreated = [];
+  $('#linkForm').onsubmit = async e => {
+    e.preventDefault();
+    const ids = [...document.querySelectorAll('#commChecks input:checked')].map(i => i.value);
+    try {
+      const r = await api('/api/links', { method: 'POST', body: JSON.stringify({ campaign: $('#campaign').value, destination: $('#dest').value, add_utm: $('#utm').checked, community_ids: ids }) });
+      lastCreated = r.links;
+      $('#newLinks').innerHTML = r.links.map(l => `<div class="result-link"><div><b>${esc(l.community)}</b><br><code>${esc(l.short_url)}</code></div><button class="btn small" data-copy="${esc(l.short_url)}">Copy</button></div>`).join('');
+      $('#copyAll').classList.remove('hidden');
+      toast(r.links.length + ' links created');
+      load();
+    } catch (e) { toast(e.message); }
+  };
+  $('#copyAll').onclick = () => copy(lastCreated.map(l => `${l.community}: ${l.short_url}`).join('\n'));
+  document.addEventListener('click', e => { const b = e.target.closest('[data-copy]'); if (b) copy(b.dataset.copy); });
+
+  function renderLinkTable() {
+    $('#linkTable').innerHTML = !links.length ? '<tr><td class="empty">No links yet.</td></tr>' :
+      '<thead><tr><th>Created</th><th>Campaign</th><th>Community</th><th>Short link</th><th class="num">Clicks</th><th class="num">Unique</th><th></th></tr></thead><tbody>' +
+      links.map(l => { const u = location.origin + '/l/' + l.code; return `<tr><td style="white-space:nowrap">${new Date(l.created_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td><td>${esc(l.campaign)}</td><td>${esc(l.community || l.community_id)}</td>
+        <td><code title="${esc(l.destination)}">/l/${esc(l.code)}</code></td><td class="num">${fmt(l.clicks)}</td><td class="num">${fmt(l.unique_clicks)}</td>
+        <td style="white-space:nowrap"><button class="btn small" data-copy="${esc(u)}">Copy</button> <button class="btn small ghost" data-del="${esc(l.code)}" title="Delete link">✕</button></td></tr>`; }).join('') + '</tbody>';
+  }
+  $('#linkTable').addEventListener('click', async e => {
+    const b = e.target.closest('[data-del]'); if (!b) return;
+    if (!confirm('Delete this link? It will stop redirecting.')) return;
+    try { await api('/api/links/' + b.dataset.del, { method: 'DELETE' }); load(); } catch (err) { toast(err.message); }
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>
