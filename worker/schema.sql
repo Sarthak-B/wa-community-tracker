@@ -54,3 +54,10 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   messages      INTEGER DEFAULT 0,
   note          TEXT
 );
+
+-- Settings and live bot status for the dashboard's Start tracking button
+CREATE TABLE IF NOT EXISTS kv (
+  key           TEXT PRIMARY KEY,
+  value         TEXT,
+  updated_at    INTEGER
+);

@@ -25,8 +25,23 @@ export default {
         if (!authorized(request, env.INGEST_TOKEN)) return json({ error: 'unauthorized' }, 401);
         return json(await ingest(await request.json(), env));
       }
+      // --- endpoints the bot calls ---
+      if (path.startsWith('/api/bot/')) {
+        if (!authorized(request, env.INGEST_TOKEN)) return json({ error: 'unauthorized' }, 401);
+        if (path === '/api/bot/config' && request.method === 'GET') return json(await getConfig(env));
+        if (path === '/api/bot/status' && request.method === 'POST') return json(await botStatus(await request.json(), env));
+        return json({ error: 'not found' }, 404);
+      }
       if (path.startsWith('/api/')) {
         if (!authorized(request, env.ADMIN_PASSWORD)) return json({ error: 'unauthorized' }, 401);
+        // --- one-click tracking control ---
+        if (path === '/api/tracking' && request.method === 'GET') return json(await trackingState(env));
+        if (path === '/api/tracking/start' && request.method === 'POST') return json(await startTracking(await request.json(), env));
+        if (path === '/api/tracking/pause' && request.method === 'POST') return json(await setConfig(env, { enabled: false }));
+        if (path === '/api/tracking/groups' && request.method === 'POST') {
+          const b = await request.json();
+          return json(await setConfig(env, { tracked_ids: Array.isArray(b.tracked_ids) && b.tracked_ids.length ? b.tracked_ids : null }));
+        }
         if (path === '/api/stats' && request.method === 'GET') return json(await stats(url, env));
         if (path === '/api/communities' && request.method === 'GET') return json(await listCommunities(env));
         if (path === '/api/communities' && request.method === 'POST') return json(await addCommunity(await request.json(), env));
@@ -263,4 +278,108 @@ async function stats(url, env) {
     daily_clicks: dailyClicks,
     daily_messages: dailyMsgs,
   };
+}
+
+// ---------- one-click tracking: settings, bot status, GitHub control ----------
+let kvReady = false;
+async function kvTable(env) {
+  if (kvReady) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER)').run();
+  kvReady = true;
+}
+async function kvGet(env, key, fallback = null) {
+  await kvTable(env);
+  const row = await env.DB.prepare('SELECT value FROM kv WHERE key = ?').bind(key).first();
+  if (!row) return fallback;
+  try { return JSON.parse(row.value); } catch { return fallback; }
+}
+async function kvSet(env, key, value) {
+  await kvTable(env);
+  await env.DB.prepare('INSERT INTO kv (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+    .bind(key, JSON.stringify(value), now()).run();
+}
+
+const DEFAULT_CONFIG = { enabled: false, tracked_ids: null, phone: '', lookback_days: 14 };
+async function getConfig(env) { return { ...DEFAULT_CONFIG, ...(await kvGet(env, 'config', {})) }; }
+async function setConfig(env, patch) {
+  const cfg = { ...(await getConfig(env)), ...patch };
+  await kvSet(env, 'config', cfg);
+  return { ok: true, config: cfg };
+}
+
+async function botStatus(body, env) {
+  const status = {
+    stage: String(body.stage || 'unknown'),
+    message: body.message ? String(body.message).slice(0, 500) : '',
+    mode: body.mode || null,
+    code: body.code || null,
+    qr: body.qr || null,
+    progress: body.progress || null,
+    run_id: body.run_id || null,
+    at: now(),
+  };
+  await kvSet(env, 'bot_status', status);
+  if (status.stage === 'connected' || status.stage === 'done') await kvSet(env, 'linked', { linked: true, at: now() });
+  if (status.stage === 'logged_out') await kvSet(env, 'linked', { linked: false, at: now() });
+  if (Array.isArray(body.groups)) {
+    await kvSet(env, 'groups', {
+      at: now(),
+      list: body.groups.slice(0, 500).map(g => ({ id: String(g.id), name: String(g.name || ''), members: Number(g.members) || 0, auto: !!g.auto, tracked: !!g.tracked })),
+    });
+  }
+  return { ok: true };
+}
+
+function github(env) {
+  if (!env.GH_TOKEN || !env.GH_REPO) return null;
+  const base = (env.GH_API || 'https://api.github.com') + '/repos/' + env.GH_REPO + '/actions/workflows/' + (env.GH_WORKFLOW || 'whatsapp-sync.yml');
+  const headers = {
+    authorization: 'Bearer ' + env.GH_TOKEN,
+    accept: 'application/vnd.github+json',
+    'x-github-api-version': '2022-11-28',
+    'user-agent': 'wa-community-tracker',
+    'content-type': 'application/json',
+  };
+  return {
+    async latestRun() {
+      const res = await fetch(base + '/runs?per_page=1', { headers });
+      if (!res.ok) throw new Error(`GitHub said ${res.status} when reading runs. Check GH_TOKEN and GH_REPO.`);
+      const run = ((await res.json()).workflow_runs || [])[0];
+      return run ? { id: run.id, status: run.status, conclusion: run.conclusion, event: run.event, html_url: run.html_url,
+        created_at: Math.floor(Date.parse(run.created_at) / 1000), updated_at: Math.floor(Date.parse(run.updated_at) / 1000) } : null;
+    },
+    async dispatch(inputs) {
+      const res = await fetch(base + '/dispatches', { method: 'POST', headers, body: JSON.stringify({ ref: env.GH_BRANCH || 'main', inputs }) });
+      if (res.status !== 204) throw new Error(`GitHub refused to start the run (${res.status}): ${(await res.text()).slice(0, 200)}`);
+    },
+  };
+}
+
+async function trackingState(env) {
+  const [config, status, groups, linked] = await Promise.all([
+    getConfig(env), kvGet(env, 'bot_status'), kvGet(env, 'groups', { at: null, list: [] }), kvGet(env, 'linked', { linked: false }),
+  ]);
+  const gh = github(env);
+  let run = null, run_error = null;
+  if (gh) { try { run = await gh.latestRun(); } catch (e) { run_error = e.message; } }
+  const lastSync = await env.DB.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').first();
+  return { configured: !!gh, config: { ...config, phone: config.phone ? config.phone.replace(/\d(?=\d{4})/g, '•') : '' },
+    status, groups, linked: !!linked.linked, run, run_error, last_sync: lastSync || null };
+}
+
+async function startTracking(body, env) {
+  const gh = github(env);
+  if (!gh) throw new Error('The Start button is not connected to GitHub yet. Add the GH_TOKEN and GH_REPO secrets to the Worker (see the setup guide).');
+  const run = await gh.latestRun();
+  if (run && run.status !== 'completed') return { ok: true, already_running: true, run };
+
+  const cfg = await getConfig(env);
+  const action = body.action === 'link' ? 'link' : 'sync';
+  let phone = String(body.phone || '').replace(/\D/g, '');
+  if (action === 'link' && !phone && body.use_saved_phone !== false) phone = cfg.phone;
+  await setConfig(env, { enabled: true, ...(phone ? { phone } : {}) });
+
+  await gh.dispatch(action === 'link' ? { mode: 'login', pair_phone: phone } : { mode: 'sync' });
+  await kvSet(env, 'bot_status', { stage: 'queued', mode: action === 'link' ? 'login' : 'sync', message: '', at: now() });
+  return { ok: true, started: action };
 }

@@ -1,4 +1,5 @@
 name: WhatsApp community sync
+# Started automatically every 3 hours, or by the Start tracking / Sync now buttons on the dashboard.
 
 on:
   schedule:
@@ -11,7 +12,7 @@ on:
         options: [sync, login]
         default: sync
       pair_phone:
-        description: "For login only: WhatsApp number with country code (e.g. 919876543210) to get a pairing code. Leave empty to get a QR code instead."
+        description: "For login only: WhatsApp number with country code (e.g. 919876543210). Empty = QR code on the dashboard."
         required: false
 
 # Never run two jobs on the same WhatsApp session at once
@@ -29,7 +30,6 @@ jobs:
       TRACKER_URL: ${{ secrets.TRACKER_URL }}
       INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
       SESSION_KEY: ${{ secrets.SESSION_KEY }}
-      LOOKBACK_DAYS: ${{ vars.LOOKBACK_DAYS || '14' }}
       GROUP_NAME_FILTER: ${{ vars.GROUP_NAME_FILTER }}
     steps:
       - uses: actions/checkout@v4
@@ -58,11 +58,11 @@ jobs:
         if: env.MODE == 'sync'
         working-directory: bot
         run: |
-          if [ ! -f ../session.tar.gz.enc ]; then
-            echo "::error::No saved WhatsApp session. Run this workflow manually with mode = login first."
-            exit 1
+          if [ -f ../session.tar.gz.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:SESSION_KEY -in ../session.tar.gz.enc | tar xz
+          else
+            echo "No saved WhatsApp session yet - the dashboard will ask you to link WhatsApp."
           fi
-          openssl enc -d -aes-256-cbc -pbkdf2 -pass env:SESSION_KEY -in ../session.tar.gz.enc | tar xz
 
       - name: Run bot
         id: bot
@@ -75,11 +75,12 @@ jobs:
         run: |
           # drop browser caches, keep only what's needed to stay logged in
           find .wwebjs_auth -type d \( -name "Cache" -o -name "Code Cache" -o -name "GPUCache" -o -name "CacheStorage" -o -name "ScriptCache" \) -prune -exec rm -rf {} + || true
+          if [ ! -d .wwebjs_auth ]; then echo "Nothing to save"; exit 0; fi
           tar cz .wwebjs_auth | openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:SESSION_KEY -out ../session.tar.gz.enc
           ls -lh ../session.tar.gz.enc
 
       - name: Save WhatsApp session
-        if: success()
+        if: success() && hashFiles('session.tar.gz.enc') != ''
         uses: actions/cache/save@v4
         with:
           path: session.tar.gz.enc

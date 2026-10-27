@@ -89,6 +89,24 @@ Tabs:
 ### How the score works
 Overall score = 50% clicks per 100 members + 30% read rate + 20% (replies + reactions) per 100 members. Each part is compared to the best community (best = 100). Per-member rates keep a 600-member community comparable with a 3,000-member one.
 
+## One-click tracking from the dashboard
+
+The dashboard has a **Start tracking** button that links WhatsApp, runs the sync and shows live progress, the pairing code (or QR), and the groups found. You don't need to open GitHub for daily use.
+
+One-time setup, so the dashboard can start the GitHub job:
+
+1. Create a fine-grained GitHub token: github.com/settings/personal-access-tokens/new. Choose *Only select repositories* (this repo), then under Repository permissions set **Actions: Read and write**.
+2. Add it to the Worker:
+
+```bash
+cd worker
+npx wrangler secret put GH_TOKEN      # paste the token
+npx wrangler secret put GH_REPO       # e.g. Sarthak-B/wa-community-tracker
+npm run deploy
+```
+
+On the dashboard you can then: **Start tracking** (link WhatsApp + first sync), **Sync now**, **Choose groups**, **Pause**, and **Re-link WhatsApp**. Scheduled runs every 3 hours skip themselves while tracking is paused.
+
 ## Limits and risks
 
 - **Unofficial automation.** whatsapp-web.js drives WhatsApp Web. That goes against WhatsApp's terms, and WhatsApp can ban accounts for it. This bot only reads, never sends, so the risk is low but not zero. Use a secondary admin number.

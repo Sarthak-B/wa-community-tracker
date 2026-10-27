@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 :root {
   color-scheme: light;
@@ -108,6 +109,38 @@ tr:last-child td { border-bottom: 0; }
 .hidden { display: none !important; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 .toast.show { opacity: 1; }
+.track { display: grid; gap: 14px; }
+.track-head { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; }
+.track-title { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--good); box-shadow: 0 0 0 4px var(--good-bg); }
+.dot.busy { background: var(--accent); animation: pulse 1.2s infinite; }
+.dot.off { background: var(--warn); }
+.dot.bad { background: var(--bad); }
+@keyframes pulse { 50% { opacity: .35; } }
+.hero { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: end; }
+@media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
+.hero h2 { font-size: 18px; margin: 0 0 4px; }
+.btn.big { padding: 11px 20px; font-size: 15px; font-weight: 600; }
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+@media (max-width: 760px) { .steps { grid-template-columns: 1fr 1fr; } }
+.step { border-top: 3px solid var(--surface-2); padding-top: 8px; font-size: 13px; color: var(--muted); }
+.step b { display: block; color: var(--text-2); font-weight: 500; }
+.step.done { border-color: var(--good); }
+.step.done b { color: var(--text); }
+.step.now { border-color: var(--accent); }
+.step.now b { color: var(--text); font-weight: 600; }
+.pair { display: flex; flex-wrap: wrap; gap: 24px; align-items: center; background: var(--surface-2); border-radius: 12px; padding: 18px; }
+.pair-code { font: 600 34px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; color: var(--text); }
+.pair ol { margin: 0; padding-left: 18px; color: var(--text-2); }
+.pair li { margin: 3px 0; }
+#qrBox { background: #fff; padding: 10px; border-radius: 8px; line-height: 0; }
+.bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; transition: width .4s; }
+.notice { padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+.notice.bad { background: var(--bad-bg); color: var(--bad); }
+.notice.warn { background: var(--warn-bg); color: var(--warn); }
+.linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 13px; }
 .legend-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
 </style>
 </head>
@@ -139,6 +172,19 @@ tr:last-child td { border-bottom: 0; }
         <button class="btn ghost" id="logout">Log out</button>
       </div>
     </header>
+
+    <div id="trackCard" class="card track"><div class="sub">Checking WhatsApp tracking…</div></div>
+
+    <div id="groupsPanel" class="card hidden">
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <div><h2>Choose which groups to track</h2><p class="hint" style="margin:0">The bot reads only the ticked groups. Changes apply from the next sync.</p></div>
+        <button class="btn ghost small" id="groupsClose">Close</button>
+      </div>
+      <div class="row" style="margin:10px 0"><input type="search" id="groupSearch" placeholder="Search groups…" style="flex:1;min-width:180px">
+        <button class="btn small" id="groupsAll">Tick all shown</button><button class="btn small" id="groupsNone">Untick all shown</button><button class="btn small" id="groupsAuto" title="Let the bot pick community announcement groups automatically">Automatic</button></div>
+      <div class="checks" id="groupList" style="max-height:360px"></div>
+      <div class="row" style="margin-top:12px;justify-content:space-between"><span class="sub" id="groupCount"></span><button class="btn primary" id="groupsSave">Save &amp; sync now</button></div>
+    </div>
 
     <nav class="tabs" id="tabs">
       <button data-tab="leader" class="on">Community leaderboard</button>
@@ -288,6 +334,7 @@ tr:last-child td { border-bottom: 0; }
     $('#app').classList.remove('hidden');
     const tab = store.get('wct_tab'); if (tab) document.querySelector(`#tabs button[data-tab="${tab}"]`)?.click();
     await load();
+    loadTracking();
   }
 
   async function load() {
@@ -315,12 +362,7 @@ tr:last-child td { border-bottom: 0; }
   }
 
   function renderSync() {
-    const s = data.last_sync;
-    const el = $('#syncInfo');
-    if (!s) { el.innerHTML = '<span class="pill warn">Bot has not synced yet</span> Link clicks are tracked already.'; return; }
-    const cls = s.status === 'ok' ? (Date.now() / 1000 - s.ran_at > 8 * 3600 ? 'warn' : 'ok') : 'bad';
-    const label = s.status === 'ok' ? `Last WhatsApp sync ${ago(s.ran_at)}` : s.status === 'logged_out' ? 'WhatsApp logged out – run the GitHub workflow in login mode' : 'Last sync failed';
-    el.innerHTML = `<span class="pill ${cls}">${esc(label)}</span> ${s.status === 'ok' ? `${s.groups} communities · ${s.messages} messages checked` : esc(s.note || '')}`;
+    $('#syncInfo').textContent = 'Messages, reads, replies and link clicks across your WhatsApp communities';
   }
 
   function renderKpis() {
@@ -493,6 +535,164 @@ tr:last-child td { border-bottom: 0; }
     if (!confirm('Delete this link? It will stop redirecting.')) return;
     try { await api('/api/links/' + b.dataset.del, { method: 'DELETE' }); load(); } catch (err) { toast(err.message); }
   });
+
+  // ================= ONE-CLICK TRACKING =================
+  const ACTIVE = new Set(['queued', 'starting', 'pairing', 'qr', 'connected', 'reading', 'uploading']);
+  let ts = null, pollTimer = null, wasActive = false, qrShown = null, groupsSel = null, lastKey = '', forceLink = false;
+
+  function nextScheduled() {
+    // workflow cron: minute 17 of every 3rd hour (UTC)
+    const d = new Date(); d.setUTCSeconds(0, 0);
+    for (let i = 0; i < 4 * 60; i++) {
+      d.setUTCMinutes(d.getUTCMinutes() + 1);
+      if (d.getUTCMinutes() === 17 && d.getUTCHours() % 3 === 0) return d;
+    }
+    return null;
+  }
+  const inMins = d => { const m = Math.round((d - Date.now()) / 60000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+
+  function phase() {
+    const st = ts.status || {}, run = ts.run;
+    const runActive = run && run.status !== 'completed';
+    const fresh = st.at && Date.now() / 1000 - st.at < 120;
+    if (runActive) {
+      const mine = st.run_id && String(st.run_id) === String(run.id);
+      return { active: true, stage: mine ? st.stage : (st.stage === 'queued' && fresh ? 'queued' : 'starting'), st: mine ? st : { mode: st.mode } };
+    }
+    if (st.stage === 'queued' && fresh) return { active: true, stage: 'queued', st };
+    // finished: did it end badly?
+    if (run && run.conclusion && run.conclusion !== 'success' && !(st.stage === 'done' && String(st.run_id) === String(run.id)) && st.stage !== 'logged_out' && st.stage !== 'error')
+      return { active: false, stage: 'error', st: { message: 'The last run stopped before finishing.' } };
+    return { active: false, stage: st.stage || 'none', st };
+  }
+
+  async function loadTracking() {
+    try { ts = await api('/api/tracking'); } catch (e) { if (e.message !== 'unauthorized') $('#trackCard').innerHTML = `<div class="notice bad">${esc(e.message)}</div>`; return; }
+    const ph = phase();
+    const key = JSON.stringify([ts.configured, ts.linked, forceLink, ph.stage, ts.config.enabled, ts.last_sync && ts.last_sync.id, ts.run && ts.run.id, ts.run && ts.run.conclusion, Math.floor(Date.now() / 600000)]);
+    if (ph.active || key !== lastKey) renderTrack(ph);
+    lastKey = key;
+    if (wasActive && !ph.active) { load(); }
+    wasActive = ph.active;
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(loadTracking, ph.active ? 3000 : 60000);
+  }
+
+  function renderTrack(ph) {
+    const el = $('#trackCard');
+    const logLink = ts.run ? ` <a class="linkish" href="${esc(ts.run.html_url)}" target="_blank" rel="noopener">View technical log</a>` : '';
+    if (!ts.configured) {
+      el.innerHTML = `<div class="track-head"><div class="track-title"><span class="dot off"></span>One-time setup needed for the Start button</div></div>
+        <div class="sub">Add two secrets to the Worker so this page can start the WhatsApp bot: <b>GH_TOKEN</b> (a GitHub token with Actions access) and <b>GH_REPO</b> (e.g. Sarthak-B/wa-community-tracker). The setup guide shows how.</div>`;
+      return;
+    }
+    if (ts.run_error) {
+      el.innerHTML = `<div class="notice bad">Can't reach GitHub: ${esc(ts.run_error)}</div>`;
+      return;
+    }
+    if (ph.active) return renderProgress(el, ph, logLink);
+    qrShown = null;
+
+    const st = ph.st || {};
+    const err = ph.stage === 'error' ? `<div class="notice bad">${esc(st.message || 'The last run failed.')}${logLink}</div>`
+      : ph.stage === 'logged_out' ? `<div class="notice bad">WhatsApp got disconnected. Press Start tracking to link it again.</div>` : '';
+
+    if (!ts.linked || forceLink) {
+      el.innerHTML = `${err}<div class="hero">
+          <div><h2>Start tracking your WhatsApp communities</h2>
+            <div class="sub">One click links your WhatsApp (admin account), reads every message you've sent in your communities, and fills this dashboard. After that it re-checks automatically every 3 hours.</div>
+            <div class="field" style="margin:14px 0 0;max-width:340px"><span>WhatsApp number with country code</span>
+              <input type="text" id="phoneIn" inputmode="numeric" placeholder="e.g. 919876543210" value="">
+              <span class="muted" style="font-weight:400">You'll get a code to type into WhatsApp. Leave empty to scan a QR code instead.</span></div>
+          </div>
+          <div style="display:grid;gap:8px;justify-items:end"><button class="btn primary big" id="startBtn">Start tracking</button>
+            ${ts.last_sync ? '<button class="linkish" id="justSync">Already linked? Just sync</button>' : ''}</div>
+        </div>`;
+      const js = $('#justSync'); if (js) js.onclick = () => { forceLink = false; start2('sync'); };
+      $('#startBtn').onclick = () => { forceLink = false; start2('link', $('#phoneIn').value); };
+      if (forceLink) $('#startBtn').insertAdjacentHTML('beforebegin', '<button class="linkish" id="cancelLink">Cancel</button>'), $('#cancelLink').onclick = () => { forceLink = false; lastKey = ''; loadTracking(); };
+      return;
+    }
+
+    const next = nextScheduled();
+    const ls = ts.last_sync;
+    const on = ts.config.enabled;
+    el.innerHTML = `${err}<div class="track-head">
+        <div><div class="track-title"><span class="dot ${on ? 'on' : 'off'}"></span>${on ? 'Tracking is on' : 'Tracking is paused'}</div>
+          <div class="sub" style="margin-top:4px">${ls ? `Last sync ${ago(ls.ran_at)} (${ls.groups} groups, ${ls.messages} messages)` : 'Not synced yet'}${on && next ? ` · next automatic sync in ${inMins(next)}` : ''}${ts.groups.list.length ? ` · ${ts.groups.list.filter(g => g.tracked).length} groups tracked` : ''}</div></div>
+        <div class="row">
+          ${on ? '<button class="btn primary" id="syncBtn">Sync now</button>' : '<button class="btn primary" id="syncBtn">Resume tracking</button>'}
+          <button class="btn" id="groupsBtn">Choose groups</button>
+          ${on ? '<button class="btn ghost" id="pauseBtn">Pause</button>' : ''}
+          <button class="linkish" id="relinkBtn" title="Use if WhatsApp was disconnected or you want to use another number">Re-link WhatsApp</button>
+        </div></div>`;
+    $('#syncBtn').onclick = () => start2('sync');
+    $('#groupsBtn').onclick = openGroups;
+    $('#relinkBtn').onclick = () => { forceLink = true; renderTrack({ active: false, stage: 'none', st: {} }); };
+    const p = $('#pauseBtn'); if (p) p.onclick = async () => { await api('/api/tracking/pause', { method: 'POST', body: '{}' }); toast('Tracking paused'); loadTracking(); };
+  }
+
+  function renderProgress(el, ph, logLink) {
+    const st = ph.st || {}, stage = ph.stage;
+    const linking = (st.mode || (ts.status || {}).mode) === 'login';
+    const order = linking ? ['setup', 'link', 'read', 'done'] : ['setup', 'read', 'done'];
+    const cur = ['queued', 'starting'].includes(stage) ? 'setup' : ['pairing', 'qr'].includes(stage) ? 'link' : ['connected', 'reading', 'uploading'].includes(stage) ? 'read' : 'done';
+    const label = { setup: ['Starting', 'Preparing the bot (about 1–2 min)'], link: ['Link WhatsApp', 'Enter the code on your phone'], read: ['Reading messages', 'Checking reads, reactions, replies'], done: ['Dashboard updated', 'Results appear below'] };
+    const ci = order.indexOf(cur);
+    const steps = `<div class="steps" style="grid-template-columns:repeat(${order.length},1fr)">${order.map((k, i) => `<div class="step ${i < ci ? 'done' : i === ci ? 'now' : ''}"><b>${i + 1}. ${label[k][0]}</b>${label[k][1]}</div>`).join('')}</div>`;
+
+    let body = `<div class="sub">${esc(st.message || (stage === 'queued' ? 'Sending the start signal to GitHub…' : 'Starting the WhatsApp bot…'))}</div>`;
+    if (stage === 'pairing' && st.code) {
+      body = `<div class="pair"><div><div class="sub" style="margin-bottom:6px">Your code</div><div class="pair-code">${esc(st.code)}</div></div>
+        <ol><li>Open WhatsApp on the admin phone</li><li>Settings → <b>Linked devices</b> → <b>Link a device</b></li><li>Tap <b>Link with phone number instead</b></li><li>Type the code shown here</li></ol></div>`;
+    } else if (stage === 'qr' && st.qr) {
+      body = `<div class="pair"><div id="qrBox"></div><ol><li>Open WhatsApp on the admin phone</li><li>Settings → <b>Linked devices</b> → <b>Link a device</b></li><li>Point the camera at this QR code</li></ol></div>`;
+    } else if (st.progress && st.progress.total) {
+      const pc = Math.round(st.progress.done / st.progress.total * 100);
+      body += `<div class="bar" style="margin-top:8px"><div style="width:${Math.max(3, pc)}%"></div></div><div class="sub" style="margin-top:4px">${st.progress.done} of ${st.progress.total} groups</div>`;
+    }
+    const keepQr = stage === 'qr' && st.qr && qrShown === st.qr && $('#qrBox');
+    if (keepQr) return; // don't redraw (avoids flicker) until the QR changes
+    el.innerHTML = `<div class="track-head"><div class="track-title"><span class="dot busy"></span>${linking ? 'Linking WhatsApp and syncing' : 'Syncing WhatsApp'}</div><div class="sub">${logLink}</div></div>${steps}${body}`;
+    if (stage === 'qr' && st.qr && window.QRCode) { new QRCode($('#qrBox'), { text: st.qr, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.L }); qrShown = st.qr; }
+  }
+
+  async function start2(action, phone) {
+    const btns = document.querySelectorAll('#trackCard button'); btns.forEach(b => b.disabled = true);
+    try {
+      const r = await api('/api/tracking/start', { method: 'POST', body: JSON.stringify({ action, phone: phone || '', use_saved_phone: false }) });
+      toast(r.already_running ? 'A sync is already running' : action === 'link' ? 'Starting… your code appears here in 1–2 minutes' : 'Sync started');
+    } catch (e) { toast(e.message); }
+    loadTracking();
+  }
+
+  // ---- choose groups ----
+  function openGroups() {
+    groupsSel = new Set(ts.groups.list.filter(g => g.tracked).map(g => g.id));
+    $('#groupsPanel').classList.remove('hidden');
+    renderGroups();
+    $('#groupsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  function shownGroups() { const q = $('#groupSearch').value.toLowerCase(); return ts.groups.list.filter(g => !q || g.name.toLowerCase().includes(q)); }
+  function renderGroups() {
+    const list = shownGroups();
+    $('#groupList').innerHTML = !ts.groups.list.length ? '<div class="muted">Groups appear here after the first sync.</div>' :
+      list.map(g => `<label><input type="checkbox" value="${esc(g.id)}" ${groupsSel.has(g.id) ? 'checked' : ''}> <span>${esc(g.name)} <span class="muted" style="font-size:12px">${fmt(g.members)} members${g.auto ? ' · suggested' : ''}</span></span></label>`).join('');
+    $('#groupCount').textContent = `${groupsSel.size} of ${ts.groups.list.length} groups ticked`;
+  }
+  $('#groupList').addEventListener('change', e => { if (e.target.type === 'checkbox') { e.target.checked ? groupsSel.add(e.target.value) : groupsSel.delete(e.target.value); $('#groupCount').textContent = `${groupsSel.size} of ${ts.groups.list.length} groups ticked`; } });
+  $('#groupSearch').oninput = renderGroups;
+  $('#groupsAll').onclick = () => { shownGroups().forEach(g => groupsSel.add(g.id)); renderGroups(); };
+  $('#groupsNone').onclick = () => { shownGroups().forEach(g => groupsSel.delete(g.id)); renderGroups(); };
+  $('#groupsAuto').onclick = () => { groupsSel = new Set(ts.groups.list.filter(g => g.auto).map(g => g.id)); renderGroups(); toast('Ticked the suggested community groups'); };
+  $('#groupsClose').onclick = () => $('#groupsPanel').classList.add('hidden');
+  $('#groupsSave').onclick = async () => {
+    try {
+      await api('/api/tracking/groups', { method: 'POST', body: JSON.stringify({ tracked_ids: [...groupsSel] }) });
+      $('#groupsPanel').classList.add('hidden');
+      await start2('sync');
+    } catch (e) { toast(e.message); }
+  };
 
   start();
 })();
