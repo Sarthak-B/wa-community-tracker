@@ -215,7 +215,11 @@ async function ingest(body, env) {
         body.note ? String(body.note).slice(0, 500) : (body.summary ? String(body.summary).slice(0, 500) : null)));
   }
   for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
-  return { ok: true, communities: Object.keys(chatToCommunity).length, messages: msgStmts.length };
+  const result = { ok: true, communities: Object.keys(chatToCommunity).length, messages: msgStmts.length,
+    received_messages: (body.messages || []).length, saved_in_db: (await env.DB.prepare('SELECT COUNT(*) AS n FROM messages').first()).n,
+    sample: (body.messages || [])[0] ? { id: String(body.messages[0].id).slice(0, 80), wa_chat_id: body.messages[0].wa_chat_id, known_group: !!(chatToCommunity[body.messages[0].wa_chat_id] || byChat.get(body.messages[0].wa_chat_id)) } : null };
+  await kvSet(env, 'last_ingest', { at: t, partial: !!body.partial, ...result });
+  return result;
 }
 
 // ---------- stats ----------

@@ -264,7 +264,7 @@ async function collect() {
 
     // save progress so nothing is lost if the run is stopped
     if (doneGroups % UPLOAD_EVERY === 0) {
-      try { await api('/api/ingest', { partial: true, status: 'ok', communities, messages }); communities = []; messages = []; }
+      try { const r = await api('/api/ingest', { partial: true, status: 'ok', communities, messages }); log('Saved batch: sent ' + communities.length + ' groups / ' + messages.length + ' messages, dashboard replied ' + JSON.stringify(r)); communities = []; messages = []; }
       catch (e) { log('Partial upload failed, will retry at the end:', e.message); }
     }
     await status('reading', { message: `Read ${name}`, progress: { done: doneGroups, total: tracked.length } });
