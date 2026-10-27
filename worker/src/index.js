@@ -7,7 +7,11 @@
 import DASHBOARD_HTML from './dashboard.html';
 
 const BOT_UA = /bot|crawl|spider|preview|facebookexternalhit|whatsapp|telegram|slack|twitter|linkedin|discord|skype|curl|wget|python|axios|node-fetch|go-http|headless|okhttp/i;
-const CODE_RE = /\/l\/([A-Za-z0-9]{4,16})/g;
+// matches both link styles: tracker.../l/CODE and yourpage.com/...?wa=CODE
+// finds link codes in message text (tracker.../CODE, tracker.../l/CODE or ?wa=CODE); only known codes are kept
+const CODE_RE = /(?:\/l\/|\/|[?&]wa=)([A-Za-z0-9][A-Za-z0-9-]{2,63})/g;
+const RESERVED = new Set(['dashboard', 'health', 'h', 't.js', 'api', 'l', 'favicon.ico', 'robots.txt']);
+const GIF = Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'), c => c.charCodeAt(0));
 const now = () => Math.floor(Date.now() / 1000);
 
 export default {
@@ -19,7 +23,13 @@ export default {
         return new Response(DASHBOARD_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
       }
       if (path.startsWith('/l/')) return handleRedirect(path.slice(3), request, env, ctx);
+      if (path === '/h') return handleHit(url.searchParams.get('c') || '', request, env, ctx);
+      if (path === '/t.js') return new Response(trackingScript(url.origin), { headers: { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
       if (path === '/health') return json({ ok: true });
+      if (path === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n');
+      if (path === '/favicon.ico') return new Response(null, { status: 204 });
+      // short links: /<page-slug>-<tag>  e.g. /funnel-agent-access-k7
+      if (/^\/[A-Za-z0-9][A-Za-z0-9-]{2,63}$/.test(path) && !RESERVED.has(path.slice(1))) return handleRedirect(path.slice(1), request, env, ctx);
 
       if (path === '/api/ingest' && request.method === 'POST') {
         if (!authorized(request, env.INGEST_TOKEN)) return json({ error: 'unauthorized' }, 401);
@@ -95,9 +105,7 @@ async function uniqueSlug(env, base) {
 }
 
 // ---------- short links ----------
-async function handleRedirect(code, request, env, ctx) {
-  const link = await env.DB.prepare('SELECT destination FROM links WHERE code = ?').bind(code).first();
-  if (!link) return new Response('This link does not exist.', { status: 404 });
+function logClick(code, request, env, ctx) {
   const ua = request.headers.get('user-agent') || '';
   const ip = request.headers.get('cf-connecting-ip') || '';
   const isBot = !ua || BOT_UA.test(ua) || request.method === 'HEAD';
@@ -107,7 +115,33 @@ async function handleRedirect(code, request, env, ctx) {
       .bind(code, now(), visitor, (request.cf && request.cf.country) || null, /Mobi|Android|iPhone|iPad/i.test(ua) ? 'mobile' : 'desktop', isBot ? 1 : 0)
       .run();
   })());
-  return Response.redirect(link.destination, 302);
+}
+
+// Short redirect links: tracker/l/CODE -> logs the click, then sends the visitor on
+// Never shows an error to a visitor: unknown/deleted links and database hiccups go to FALLBACK_URL.
+async function handleRedirect(code, request, env, ctx) {
+  const fallback = env.FALLBACK_URL || 'https://sb.flexifunnels.com';
+  let link = null;
+  try { link = await env.DB.prepare('SELECT destination FROM links WHERE code = ?').bind(code).first(); }
+  catch (e) { return Response.redirect(fallback, 302); }
+  if (!link) return Response.redirect(fallback, 302);
+  try { logClick(code, request, env, ctx); } catch (e) {}
+  return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store' } });
+}
+
+// Direct links: yourpage.com/...?wa=CODE. The tracking snippet on the page calls /h?c=CODE.
+// Link previews don't run page scripts, so they are never counted.
+async function handleHit(code, request, env, ctx) {
+  const headers = { 'content-type': 'image/gif', 'cache-control': 'no-store', 'access-control-allow-origin': '*' };
+  if (/^[A-Za-z0-9]{4,16}$/.test(code)) {
+    const link = await env.DB.prepare('SELECT code FROM links WHERE code = ?').bind(code).first();
+    if (link) logClick(code, request, env, ctx);
+  }
+  return new Response(GIF, { headers });
+}
+
+function trackingScript(origin) {
+  return `(function(){try{var c=new URLSearchParams(location.search).get('wa');if(!c||!/^[A-Za-z0-9]{4,16}$/.test(c))return;var k='wa_hit_'+c;try{if(sessionStorage.getItem(k))return;sessionStorage.setItem(k,'1')}catch(e){}new Image().src='${origin}/h?c='+c+'&t='+Date.now()}catch(e){}})();`;
 }
 
 // ---------- communities & links ----------
@@ -133,8 +167,9 @@ async function listLinks(env) {
     LEFT JOIN communities c ON c.id = l.community_id
     LEFT JOIN clicks k ON k.code = l.code AND k.is_bot = 0
     GROUP BY l.code ORDER BY l.created_at DESC, c.name LIMIT 1000`).all();
-  return { links: results };
+  return { links: results, short_base: shortBase(env, null) };
 }
+function shortBase(env, origin) { return (env.SHORT_BASE || origin || '').replace(/\/+$/, ''); }
 async function createLinks(body, env, origin) {
   const campaign = String(body.campaign || '').trim();
   let destination = String(body.destination || '').trim();
@@ -145,20 +180,36 @@ async function createLinks(body, env, origin) {
   const created = [];
   const stmts = [];
   const comms = new Map((await env.DB.prepare('SELECT id, name FROM communities').all()).results.map(r => [r.id, r]));
+  const taken = new Set((await env.DB.prepare('SELECT code FROM links').all()).results.map(r => r.code.toLowerCase()));
+  // short link = last part of the page address + a 2-3 character tag per community
+  const pageSlug = (new URL(destination).pathname.split('/').filter(Boolean).pop() || '').toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  const tagChars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const newCode = () => {
+    for (let len = 2; len <= 6; len++) for (let tries = 0; tries < 30; tries++) {
+      const tag = Array.from(crypto.getRandomValues(new Uint8Array(len)), b => tagChars[b % tagChars.length]).join('');
+      const c = pageSlug ? `${pageSlug}-${tag}` : tag + randomCode(3).toLowerCase();
+      if (!taken.has(c) && !RESERVED.has(c)) { taken.add(c); return c; }
+    }
+    return randomCode(8);
+  };
+  const base = shortBase(env, origin);
   for (const id of ids) {
     const comm = comms.get(id);
     if (!comm) continue;
     const dest = new URL(destination);
-    if (body.add_utm !== false) {
+    const direct = body.style === 'direct';
+    if (body.add_utm !== false && !direct) {
       dest.searchParams.set('utm_source', 'whatsapp');
       dest.searchParams.set('utm_medium', 'community');
       dest.searchParams.set('utm_campaign', slugify(campaign));
       dest.searchParams.set('utm_content', comm.id);
     }
-    const code = randomCode();
+    const code = direct ? randomCode(5) : newCode();
+    if (direct) dest.searchParams.set('wa', code);
     stmts.push(env.DB.prepare('INSERT INTO links (code, community_id, campaign, destination, created_at) VALUES (?,?,?,?,?)')
       .bind(code, comm.id, campaign, dest.toString(), now()));
-    created.push({ code, community_id: comm.id, community: comm.name, short_url: `${origin}/l/${code}`, destination: dest.toString() });
+    created.push({ code, community_id: comm.id, community: comm.name, short_url: direct ? dest.toString() : `${base}/${code}`, destination: dest.toString(), direct });
   }
   if (stmts.length) await env.DB.batch(stmts);
   return { campaign, links: created };

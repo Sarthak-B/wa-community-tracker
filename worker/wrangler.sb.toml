@@ -1,0 +1,24 @@
+name = "sb"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# Dashboard HTML is bundled into the worker as text
+rules = [{ type = "Text", globs = ["**/*.html"], fallthrough = true }]
+
+[vars]
+SHORT_BASE = "https://sb.flexicommunities.workers.dev"   # where short links live
+FALLBACK_URL = "https://sb.flexifunnels.com"               # where unknown/removed links go
+TZ_OFFSET_MINUTES = "330"   # IST, used for "per day" charts
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wa_tracker"
+database_id = "0a78d78d-464a-4a20-a4d3-72ba54ef437c"
+
+# Secrets (set with `npx wrangler secret put <NAME>`), never put them in this file:
+#   ADMIN_PASSWORD  - password for the dashboard
+#   INGEST_TOKEN    - token the GitHub Actions bot uses to upload data
+#   HASH_SALT       - any random string, used to anonymise visitor IPs
+
+# Optional: serve links from your own domain, e.g. go.flexifunnels.com
+# routes = [{ pattern = "go.flexifunnels.com", custom_domain = true }]

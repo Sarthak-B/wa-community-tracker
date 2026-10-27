@@ -250,7 +250,9 @@ tr:last-child td { border-bottom: 0; }
           <form id="linkForm">
             <label class="field"><span>Campaign name</span><input type="text" id="campaign" placeholder="e.g. Diwali webinar invite" required></label>
             <label class="field"><span>Where the link should go</span><input type="url" id="dest" placeholder="https://…" required></label>
-            <label class="row sub" style="margin-bottom:12px"><input type="checkbox" id="utm" checked> Add UTM tags (shows up in Google Analytics / page stats)</label>
+            <div class="field hidden"><div class="seg" id="linkStyle"></div><span id="styleHint"></span></div>
+            <p class="hint" id="linkPreview" style="margin-top:-4px"></p>
+            <label class="row sub" style="margin-bottom:12px" id="utmRow"><input type="checkbox" id="utm" checked> Add UTM tags (shows up in Google Analytics / page stats)</label>
             <div class="field"><span class="row" style="justify-content:space-between">Communities <button type="button" class="btn small" id="selAll">Select all</button></span><div class="checks" id="commChecks"></div></div>
             <div class="row" style="margin-bottom:14px"><input type="text" id="newComm" placeholder="Add a community by name" style="flex:1"><button type="button" class="btn" id="addComm">Add</button></div>
             <button class="btn primary">Create links</button>
@@ -262,6 +264,7 @@ tr:last-child td { border-bottom: 0; }
           <div id="newLinks"><div class="empty">Links you create appear here.</div></div>
         </div>
       </div>
+      <div class="hidden"><code id="snippet"></code><button id="copySnippet"></button></div>
       <div class="card">
         <h2>All tracked links</h2><p class="hint">Click counts exclude WhatsApp link-preview fetches and bots.</p>
         <div class="tablewrap"><table id="linkTable"></table></div>
@@ -340,7 +343,9 @@ tr:last-child td { border-bottom: 0; }
   async function load() {
     document.querySelectorAll('#period button').forEach(b => b.classList.toggle('on', Number(b.dataset.days) === days));
     try {
-      [data, { links }, { communities }] = await Promise.all([api('/api/stats?days=' + days), api('/api/links'), api('/api/communities')]);
+      let lr;
+      [data, lr, { communities }] = await Promise.all([api('/api/stats?days=' + days), api('/api/links'), api('/api/communities')]);
+      links = lr.links; if (lr.short_base) shortBase = lr.short_base; updatePreview();
     } catch (e) { if (e.message !== 'unauthorized') toast(e.message); return; }
     computeScores();
     renderSync(); renderKpis(); renderLeader(); renderCharts(); renderCampaigns(); renderMessages(); renderCommChecks(); renderLinkTable();
@@ -512,7 +517,7 @@ tr:last-child td { border-bottom: 0; }
     e.preventDefault();
     const ids = [...document.querySelectorAll('#commChecks input:checked')].map(i => i.value);
     try {
-      const r = await api('/api/links', { method: 'POST', body: JSON.stringify({ campaign: $('#campaign').value, destination: $('#dest').value, add_utm: $('#utm').checked, community_ids: ids }) });
+      const r = await api('/api/links', { method: 'POST', body: JSON.stringify({ campaign: $('#campaign').value, destination: $('#dest').value, add_utm: $('#utm').checked, style: linkStyle, community_ids: ids }) });
       lastCreated = r.links;
       $('#newLinks').innerHTML = r.links.map(l => `<div class="result-link"><div><b>${esc(l.community)}</b><br><code>${esc(l.short_url)}</code></div><button class="btn small" data-copy="${esc(l.short_url)}">Copy</button></div>`).join('');
       $('#copyAll').classList.remove('hidden');
@@ -523,16 +528,40 @@ tr:last-child td { border-bottom: 0; }
   $('#copyAll').onclick = () => copy(lastCreated.map(l => `${l.community}: ${l.short_url}`).join('\n'));
   document.addEventListener('click', e => { const b = e.target.closest('[data-copy]'); if (b) copy(b.dataset.copy); });
 
+  // ---- link style ----
+  let linkStyle = 'short';
+  const snippetText = `<script src="${location.origin}/t.js" async></` + `script>`;
+  $('#snippet').textContent = snippetText;
+  $('#copySnippet').onclick = () => copy(snippetText);
+  function renderStyle() {
+    document.querySelectorAll('#linkStyle button').forEach(b => b.classList.toggle('on', b.dataset.s === linkStyle));
+    const direct = linkStyle === 'direct';
+    $('#styleHint').textContent = direct
+      ? 'Looks like your normal link with a short tag at the end, e.g. sb.flexifunnels.com/funnel-agent-access?wa=K7qD2. Needs the one-time snippet below on that page.'
+      : 'A redirect through this tracker. Works on any page with no setup, but the link is longer.';
+    $('#utmRow').classList.toggle('hidden', direct);
+  }
+  $('#linkStyle').onclick = e => { const b = e.target.closest('button'); if (!b) return; linkStyle = b.dataset.s; store.set('wct_style', linkStyle); renderStyle(); };
+  renderStyle();
+  let shortBase = location.origin;
+  const linkUrl = l => new RegExp('[?&]wa=' + l.code + '(&|$)').test(l.destination) ? l.destination : shortBase + '/' + l.code;
+  function updatePreview() {
+    let slug = '';
+    try { slug = (new URL($('#dest').value).pathname.split('/').filter(Boolean).pop() || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-'); } catch (e) {}
+    $('#linkPreview').textContent = 'Your links will look like: ' + shortBase.replace(/^https?:\/\//, '') + '/' + (slug ? slug + '-k7' : 'k7m2p') + '  (one ending per community)';
+  }
+  $('#dest').addEventListener('input', updatePreview);
+
   function renderLinkTable() {
     $('#linkTable').innerHTML = !links.length ? '<tr><td class="empty">No links yet.</td></tr>' :
       '<thead><tr><th>Created</th><th>Campaign</th><th>Community</th><th>Short link</th><th class="num">Clicks</th><th class="num">Unique</th><th></th></tr></thead><tbody>' +
-      links.map(l => { const u = location.origin + '/l/' + l.code; return `<tr><td style="white-space:nowrap">${new Date(l.created_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td><td>${esc(l.campaign)}</td><td>${esc(l.community || l.community_id)}</td>
-        <td><code title="${esc(l.destination)}">/l/${esc(l.code)}</code></td><td class="num">${fmt(l.clicks)}</td><td class="num">${fmt(l.unique_clicks)}</td>
+      links.map(l => { const u = linkUrl(l); return `<tr><td style="white-space:nowrap">${new Date(l.created_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td><td>${esc(l.campaign)}</td><td>${esc(l.community || l.community_id)}</td>
+        <td><code title="${esc(u)}">${esc(u.replace(/^https?:\/\//, '').replace(/^www\./, ''))}</code></td><td class="num">${fmt(l.clicks)}</td><td class="num">${fmt(l.unique_clicks)}</td>
         <td style="white-space:nowrap"><button class="btn small" data-copy="${esc(u)}">Copy</button> <button class="btn small ghost" data-del="${esc(l.code)}" title="Delete link">✕</button></td></tr>`; }).join('') + '</tbody>';
   }
   $('#linkTable').addEventListener('click', async e => {
     const b = e.target.closest('[data-del]'); if (!b) return;
-    if (!confirm('Delete this link? It will stop redirecting.')) return;
+    if (!confirm('Remove this link from the list? Anyone who still clicks it will be sent to your main website instead.')) return;
     try { await api('/api/links/' + b.dataset.del, { method: 'DELETE' }); load(); } catch (err) { toast(err.message); }
   });
 
