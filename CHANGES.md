@@ -65,3 +65,9 @@
 - **One form:** "Send a message" now has a page-link field (step 2). The link is swapped for each community's own link wherever it appears in the message, added at the end if it isn't there, or given on its own if there is no message (links only). The separate link-only form is gone; the link list stays below.
 - **Search** in Pick communities; "Select all" becomes "Select these" while searching; picked count shown.
 - **Progress bar at the top of every tab** while messages are going out (count, what the bot is doing, View, Stop), then a done / problems summary for 15 minutes.
+
+# Update 14 (2026-10-28): photos / videos / PDFs send again
+- **Root cause of "Data passed to getter must include an id property" on messages with a file:** current WhatsApp Web no longer fills in the file's `filehash` while preparing media, and whatsapp-web.js (1.34.7, and its latest code on GitHub) uses that empty value as a lookup key, which crashes. The bot now replaces the library's media step with the same code plus the missing hash, calculated the way WhatsApp does (SHA-256 of the prepared file, base64). Text-only messages were never affected by this step.
+- A media error now says so in plain words ("WhatsApp didn't accept the photo/file… post this one yourself"); media sends are not retried without link preview (that isn't the cause there).
+- **Duplicate communities:** a community's main (parent) group is now also recognised when WhatsApp doesn't mark it, by checking which group the others point to as their parent. After the next sync it disappears from Pick communities.
+- GitHub runs are named by what they do: "Sending messages", "Sync now", "Linking WhatsApp", "Scheduled sync".

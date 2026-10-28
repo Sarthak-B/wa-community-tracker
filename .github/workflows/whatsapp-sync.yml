@@ -1,4 +1,6 @@
 name: WhatsApp community sync
+# Each run is named by what it does, so the Actions list shows it at a glance
+run-name: ${{ github.event_name == 'schedule' && 'Scheduled sync' || (inputs.mode == 'send' && 'Sending messages' || (inputs.mode == 'login' && 'Linking WhatsApp' || 'Sync now')) }}
 # Started automatically every 6 hours, or by the Start tracking / Sync now buttons on the dashboard.
 
 on:

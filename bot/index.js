@@ -237,6 +237,70 @@ async function fetchMedia(job) {
 // current WhatsApp Web ("Data passed to getter must include an id property"): marking the chat as seen
 // before sending, and re-reading the sent message afterwards. Each stage is named so an error says
 // whether the message could already have gone out.
+// Fix for photos / videos / PDFs: current WhatsApp Web no longer fills in a file's "filehash" while
+// preparing it, and whatsapp-web.js (1.34.7 and its latest code) then crashes with "Data passed to getter
+// must include an id property". This replaces the library's media step with the same code plus the missing
+// hash, calculated the way WhatsApp does it: SHA-256 of the prepared file, base64. Installed once per run.
+let mediaFixInstalled = false;
+async function installMediaFix() {
+  if (mediaFixInstalled) return;
+  await client.pupPage.evaluate(() => {
+    const W = window.WWebJS;
+    const sha = async (blob) => {
+      const buf = await blob.arrayBuffer();
+      const h = new Uint8Array(await crypto.subtle.digest('SHA-256', buf));
+      let s = ''; for (const b of h) s += String.fromCharCode(b);
+      return btoa(s);
+    };
+    W.processMediaData = async (mediaInfo, { forceSticker, forceGif, forceVoice, forceDocument, forceMediaHd, sendToChannel, sendToStatus }) => {
+      const file = W.mediaInfoToFile(mediaInfo);
+      const OpaqueData = window.require('WAWebMediaOpaqueData');
+      const opaqueData = await OpaqueData.createFromData(file, mediaInfo.mimetype);
+      const mediaParams = { asSticker: forceSticker, asGif: forceGif, isPtt: forceVoice, asDocument: forceDocument };
+      if (forceMediaHd && file.type.indexOf('image/') === 0) mediaParams.maxDimension = 2560;
+      const mediaPrep = window.require('WAWebPrepRawMedia').prepRawMedia(opaqueData, mediaParams);
+      const mediaData = await mediaPrep.waitForPrep();
+      if (!mediaData.filehash) {
+        // hash the file exactly as it will be uploaded (WhatsApp may have resized a photo)
+        let blob = null; const mb = mediaData.mediaBlob;
+        try { if (mb instanceof Blob) blob = mb; } catch (e) {}
+        for (const fn of ['forceToBlob', 'formData', 'toBlob', 'blob']) {
+          if (blob || !mb) break;
+          try { const r = typeof mb[fn] === 'function' ? await mb[fn]() : null; if (r instanceof Blob) blob = r; } catch (e) {}
+        }
+        const hash = await sha(blob || file);
+        try { mediaData.set ? mediaData.set({ filehash: hash }) : (mediaData.filehash = hash); } catch (e) { try { mediaData.filehash = hash; } catch (e2) {} }
+        if (!mediaData.filehash) throw new Error('media-fault: could not set the file hash');
+      }
+      const mediaObject = window.require('WAWebMediaStorage').getOrCreateMediaObject(mediaData.filehash);
+      const mediaType = window.require('WAWebMmsMediaTypes').msgToMediaType({ type: mediaData.type, isGif: mediaData.isGif, isNewsletter: sendToChannel });
+      if (!(mediaData.mediaBlob instanceof OpaqueData)) mediaData.mediaBlob = await OpaqueData.createFromData(mediaData.mediaBlob, mediaData.mediaBlob.type);
+      mediaData.renderableUrl = mediaData.mediaBlob.url();
+      mediaObject.consolidate(mediaData.toJSON());
+      mediaData.mediaBlob.autorelease();
+      const castV4 = window.require('WAWebMmsMediaTypes').castToV4(mediaObject.type);
+      if (window.require('WAWebMediaDataUtils').shouldUseMediaCache(castV4) && mediaData.mediaBlob instanceof OpaqueData) {
+        window.require('WAWebMediaInMemoryBlobCache').InMemoryMediaBlobCache.put(mediaObject.filehash, mediaData.mediaBlob.formData());
+      }
+      const dataToUpload = { mimetype: mediaData.mimetype, mediaObject, mediaType,
+        ...(sendToChannel ? { calculateToken: window.require('WAMediaCalculateFilehash').getRandomFilehash } : {}) };
+      const { uploadMedia, uploadUnencryptedMedia } = window.require('WAWebMediaMmsV4Upload');
+      const uploadedMedia = !sendToChannel ? await uploadMedia(dataToUpload) : await uploadUnencryptedMedia(dataToUpload);
+      const mediaEntry = uploadedMedia.mediaEntry;
+      if (!mediaEntry) throw new Error('upload failed: media entry was not created');
+      mediaData.set({
+        clientUrl: mediaEntry.mmsUrl, deprecatedMms3Url: mediaEntry.deprecatedMms3Url, directPath: mediaEntry.directPath,
+        mediaKey: mediaEntry.mediaKey, mediaKeyTimestamp: mediaEntry.mediaKeyTimestamp, filehash: mediaObject.filehash,
+        encFilehash: mediaEntry.encFilehash, uploadhash: mediaEntry.uploadHash, size: mediaObject.size,
+        streamingSidecar: mediaEntry.sidecar, firstFrameSidecar: mediaEntry.firstFrameSidecar,
+        mediaHandle: sendToChannel ? mediaEntry.handle : null,
+      });
+      return mediaData;
+    };
+  });
+  mediaFixInstalled = true;
+}
+
 async function waSend(chatId, text, media, extra = {}) {
   const opts = {
     linkPreview: extra.linkPreview !== false, parseVCards: true, mentionedJidList: [], ignoreQuoteErrors: true, waitUntilMsgSent: false,
@@ -286,8 +350,9 @@ async function showTyping(chatId, ms) {
 }
 
 // WhatsApp Web's own errors are technical; say what they mean
-function plainError(e) {
+function plainError(e, withMedia) {
   const m = String((e && e.message) || e);
+  if (withMedia && /media|upload|filehash|getter must include an id/i.test(m)) return 'WhatsApp didn\'t accept the photo/file (a glitch on WhatsApp\'s side). It was checked: it is not in the group. Post this one yourself, or create it again without the file.';
   if (/getter must include an id|memoize|Evaluation failed|Protocol error|Target closed|Session closed/i.test(m)) return 'WhatsApp didn\'t accept this one (a glitch on WhatsApp\'s side). It was checked: it is not in the group. Click Try again later, or post it yourself.';
   if (/timed? ?out/i.test(m)) return 'WhatsApp took too long to answer. It was checked: it is not in the group. Click Try again later, or post it yourself.';
   if (/download the attached file/i.test(m)) return 'The attached file could not be loaded. Create the message again with the file, or post it yourself.';
@@ -332,13 +397,14 @@ async function sendQueued() {
         if (md.announce && mine && !mine.isAdmin && !mine.isSuperAdmin) throw new Error('The linked WhatsApp number is not an admin here, so it can\'t post. Make it admin, or post this one yourself.');
       }
       const media = job.media_key ? (mediaCache[job.media_key] || (mediaCache[job.media_key] = await fetchMedia(job))) : null;
+      if (media) await installMediaFix();
       await showTyping(job.wa_chat_id, 2000 + Math.random() * 3000); // like a person typing
       result = await waSend(job.wa_chat_id, job.body, media);
       if (result.error && result.stage !== 'open') {
         // unclear whether it went out: look before calling it a failure, so nothing is ever posted twice
         await sleep(6000);
         if (await alreadyInChat(job.wa_chat_id, job.body)) { log(`  (error "${result.error}" but the message is in the group)`); result = { ok: true }; }
-        else if (result.stage === 'send') {
+        else if (result.stage === 'send' && !media) {
           // not in the group: one careful retry without the link preview (the step most likely to trip)
           log(`  (send failed: ${result.error}; retrying once without link preview)`);
           await sleep(8000 + Math.random() * 7000);
@@ -352,7 +418,7 @@ async function sendQueued() {
       sent++; inARow = 0; log(`  ✓ sent to ${job.community}`);
     } catch (e) {
       failed++; inARow++; log(`  ✗ ${job.community}: ${e.message || e}`);
-      try { await api(`/api/bot/sends/${job.id}`, { status: 'failed', error: plainError(e) }); } catch {}
+      try { await api(`/api/bot/sends/${job.id}`, { status: 'failed', error: plainError(e, !!job.media_key) }); } catch {}
     }
     done = i + 1;
     if (inARow >= STOP_AFTER_FAILS) { paused = true; break; }
@@ -382,12 +448,13 @@ async function collect() {
     return (parentId && creationById[parentId]) || Number(md.creation) || 0;
   };
 
+  const parentIds = new Set(groups.map(g => { const p = (g.groupMetadata || {}).parentGroup; return p && (p._serialized || String(p)); }).filter(Boolean));
   const list = groups.map(g => {
     const md = g.groupMetadata || {};
     // A community's main ("parent") group only holds the admins and nobody posts in it; members get posts in its
     // announcement group, which carries the same name. Tracking both made every community appear twice, so a
     // parent group is never tracked, even if it was ticked before.
-    const parent = !!md.isParentGroup;
+    const parent = !!md.isParentGroup || parentIds.has(g.id._serialized);
     const auto = !parent && (GROUP_FILTER ? GROUP_FILTER.test(g.name || '') : isCommunityAnnouncementGroup(g));
     const tracked = !parent && (picked ? picked.has(g.id._serialized) : auto);
     const members = (md.participants || []).length || Number(md.size) || 0;
