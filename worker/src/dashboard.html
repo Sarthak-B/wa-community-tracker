@@ -58,6 +58,19 @@ h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.small { padding: 4px 9px; font-size: 12px; }
 .btn.ghost { border-color: transparent; background: transparent; }
+.livepill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 5px 11px; font: 500 13px Inter, system-ui, sans-serif; cursor: pointer; }
+.livepill .ldot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 rgba(34,160,90,.5); animation: lpulse 2s infinite; }
+.livepill.off .ldot { background: var(--muted); animation: none; }
+.livepill.flash { border-color: var(--good); color: var(--good); }
+@keyframes lpulse { 0% { box-shadow: 0 0 0 0 rgba(34,160,90,.45); } 70% { box-shadow: 0 0 0 7px rgba(34,160,90,0); } 100% { box-shadow: 0 0 0 0 rgba(34,160,90,0); } }
+@media (prefers-reduced-motion: reduce) { .livepill .ldot { animation: none; } }
+.lrow { display: grid; grid-template-columns: 78px 1fr auto; gap: 10px; align-items: center; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.lrow:last-child { border-bottom: 0; }
+.lrow.new { animation: lnew 3s ease-out; }
+@keyframes lnew { from { background: var(--good-bg); } to { background: transparent; } }
+.lrow .when { color: var(--text-2); white-space: nowrap; }
+.lrow .what b { font-weight: 600; }
+.lrow .meta { color: var(--text-2); white-space: nowrap; font-size: 12.5px; }
 select, input[type=text], input[type=url], input[type=password], input[type=search] { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; min-width: 0; }
 .seg { display: inline-flex; background: var(--surface-2); border-radius: 9px; padding: 3px; }
 .seg button { border: 0; background: transparent; padding: 5px 11px; border-radius: 7px; cursor: pointer; color: var(--text-2); font-weight: 500; font-size: 13px; }
@@ -204,6 +217,7 @@ tr:last-child td { border-bottom: 0; }
         <div class="seg" id="period">
           <button data-days="7">7 days</button><button data-days="30" class="on">30 days</button><button data-days="90">90 days</button><button data-days="0">All time</button>
         </div>
+        <button class="livepill" id="livePill" title="Clicks update by themselves every 15 seconds. Click to pause."><span class="ldot"></span><span id="liveTxt">Live</span></button>
         <button class="btn" id="refresh" title="Reload data">Refresh</button>
         <button class="btn ghost" id="themeBtn" title="Toggle light / dark">Theme</button>
         <button class="btn ghost" id="logout">Log out</button>
@@ -234,6 +248,11 @@ tr:last-child td { border-bottom: 0; }
     <!-- LEADERBOARD -->
     <section id="tab-leader">
       <div class="kpis" id="kpis"></div>
+      <div class="card" id="liveCard">
+        <div class="row" style="justify-content:space-between;align-items:baseline"><h2>Live clicks</h2><span class="sub" id="liveSum">Loading…</span></div>
+        <p class="hint" style="margin:0 0 8px">Every click on a tracked link shows here within 15 seconds, with no sync needed. (Reads, reactions and replies still come from the WhatsApp sync.)</p>
+        <div id="liveFeed"></div>
+      </div>
       <div class="card">
         <div class="row" style="justify-content:space-between;margin-bottom:8px">
           <div><h2>Which community performs best</h2><p class="hint" style="margin:0" id="leaderHint">Newest community at the top. The # column is each community's rank for the selected period.</p></div>
@@ -410,6 +429,44 @@ tr:last-child td { border-bottom: 0; }
   };
   $('#period').onclick = e => { const b = e.target.closest('button'); if (!b) return; days = Number(b.dataset.days); store.set('wct_days', days); load(); };
   $('#refresh').onclick = () => load();
+
+  // ---- live clicks: clicks are saved the moment they happen, so the dashboard just asks every 15 s ----
+  let liveOn = store.get('wct_live') !== 'off', liveSince = 0, liveTimer = null, liveSeen = new Set(), lastLiveLoad = 0, liveFirst = true;
+  const flag = cc => cc && /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map(c => 127397 + c.charCodeAt(0))) : '';
+  const shortAgo = t => { const s = Math.max(0, Date.now() / 1000 - t); return s < 60 ? Math.round(s) + 's ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : s < 86400 ? Math.round(s / 3600) + ' h ago' : new Date(t * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }); };
+  function setLivePill(text, flash) {
+    const p = $('#livePill'); p.classList.toggle('off', !liveOn); p.classList.toggle('flash', !!flash);
+    $('#liveTxt').textContent = liveOn ? (text || 'Live') : 'Paused';
+    p.title = liveOn ? 'Clicks update by themselves every 15 seconds. Click to pause.' : 'Live updates paused. Click to turn them back on.';
+  }
+  async function pollLive() {
+    clearTimeout(liveTimer);
+    if (!token || !liveOn) return;
+    if (document.hidden) { liveTimer = setTimeout(pollLive, 15000); return; } // nobody looking: don't spend requests
+    try {
+      const r = await api('/api/live?since=' + (liveSince || Math.floor(Date.now() / 1000) - 3600));
+      const fresh = r.recent.filter(c => !liveSeen.has(c.id));
+      r.recent.forEach(c => liveSeen.add(c.id));
+      $('#liveSum').textContent = `${fmt(r.last_hour)} in the last hour · ${fmt(r.today)} today (${fmt(r.today_unique)} people)`;
+      $('#liveFeed').innerHTML = !r.recent.length ? '<div class="empty">No clicks yet. They appear here as soon as someone taps a tracked link.</div>' :
+        r.recent.map(c => `<div class="lrow${!liveFirst && fresh.some(f => f.id === c.id) ? ' new' : ''}"><span class="when" data-t="${c.clicked_at}">${shortAgo(c.clicked_at)}</span>
+          <span class="what"><b>${esc(c.community || c.community_id)}</b><span class="muted"> · ${esc(c.campaign)}</span></span>
+          <span class="meta">${flag(c.country)} ${esc(c.country || '')} · ${c.device === 'mobile' ? '📱' : '💻'}</span></div>`).join('');
+      const newCount = liveFirst ? 0 : fresh.length;
+      liveSince = r.now; liveFirst = false;
+      if (newCount) {
+        setLivePill(`+${newCount} new click${newCount > 1 ? 's' : ''}`, true);
+        setTimeout(() => setLivePill(), 4000);
+        // refresh the numbers everywhere (leaderboard, campaigns, link list), at most every 15 s
+        if (Date.now() - lastLiveLoad > 14000) { lastLiveLoad = Date.now(); load(); }
+      } else setLivePill();
+    } catch (e) { if (e.message !== 'unauthorized') setLivePill('Live (retrying)'); }
+    liveTimer = setTimeout(pollLive, 15000);
+  }
+  function startLive() { setLivePill(); pollLive(); }
+  $('#livePill').onclick = () => { liveOn = !liveOn; store.set('wct_live', liveOn ? null : 'off'); setLivePill(); if (liveOn) pollLive(); else clearTimeout(liveTimer); toast(liveOn ? 'Live updates on' : 'Live updates paused'); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && liveOn) pollLive(); });
+  setInterval(() => document.querySelectorAll('#liveFeed .when').forEach(el => el.textContent = shortAgo(Number(el.dataset.t))), 10000);
   $('#rankBy').onchange = e => { rankBy = e.target.value; if (data) computeScores(); renderLeader(); renderCharts(); };
   $('#orderBy').value = orderBy;
   $('#orderBy').onchange = e => { orderBy = e.target.value; store.set('wct_order', orderBy); renderLeader(); renderCharts(); };
@@ -424,6 +481,7 @@ tr:last-child td { border-bottom: 0; }
     const tab = store.get('wct_tab'); if (tab) document.querySelector(`#tabs button[data-tab="${tab}"]`)?.click();
     await load();
     loadTracking();
+    startLive();
   }
 
   async function load() {

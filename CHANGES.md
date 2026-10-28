@@ -71,3 +71,9 @@
 - A media error now says so in plain words ("WhatsApp didn't accept the photo/file… post this one yourself"); media sends are not retried without link preview (that isn't the cause there).
 - **Duplicate communities:** a community's main (parent) group is now also recognised when WhatsApp doesn't mark it, by checking which group the others point to as their parent. After the next sync it disappears from Pick communities.
 - GitHub runs are named by what they do: "Sending messages", "Sync now", "Linking WhatsApp", "Scheduled sync".
+
+# Update 15 (2026-10-28): live clicks
+- Clicks were always saved the moment they happen; the dashboard now fetches them every 15 seconds by itself (`GET /api/live`), so no sync or Refresh is needed for clicks. A **Live** pill in the header shows it's on (click to pause; flashes "+N new clicks"). When new clicks arrive, the leaderboard, campaigns, KPIs and link list refresh too (at most every 15 s).
+- New **Live clicks** card at the top of the leaderboard: the last 15 clicks (time, community, campaign, country, phone/computer) and counts for the last hour and today (with unique people). Link-preview fetchers and bots are still left out.
+- Updates pause while the dashboard tab is hidden, so an open tab in the background costs nothing. Reads, reactions and replies still come from the WhatsApp sync (WhatsApp only gives those to the bot).
+- New index `idx_clicks_time` on clicks(clicked_at), created automatically.

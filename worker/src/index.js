@@ -67,6 +67,7 @@ export default {
           return json(await setConfig(env, { tracked_ids: b.automatic ? null : (Array.isArray(b.tracked_ids) ? b.tracked_ids.map(String) : []) }));
         }
         if (path === '/api/stats' && request.method === 'GET') return json(await stats(url, env));
+        if (path === '/api/live' && request.method === 'GET') return json(await live(url, env));
         if (path === '/api/communities' && request.method === 'GET') return json(await listCommunities(env));
         if (path === '/api/communities' && request.method === 'POST') return json(await addCommunity(await request.json(), env));
         if (path === '/api/links' && request.method === 'GET') return json(await listLinks(env));
@@ -460,6 +461,23 @@ async function stats(url, env) {
   };
 }
 
+// ---------- live clicks (the dashboard asks every 15 s; clicks are saved the moment they happen) ----------
+async function live(url, env) {
+  const t = now();
+  const since = Math.min(t, Number(url.searchParams.get('since')) || t - 3600);
+  const tzMin = Number(env.TZ_OFFSET_MINUTES || 330);
+  const dayStart = Math.floor((t + tzMin * 60) / 86400) * 86400 - tzMin * 60; // midnight, local time
+  const [counts, recent] = await Promise.all([
+    env.DB.prepare(`SELECT SUM(clicked_at > ?) AS fresh, SUM(clicked_at > ?) AS last_hour, SUM(clicked_at >= ?) AS today,
+        COUNT(DISTINCT CASE WHEN clicked_at >= ? THEN visitor_hash END) AS today_unique
+      FROM clicks WHERE is_bot = 0 AND clicked_at >= ?`).bind(since, t - 3600, dayStart, dayStart, Math.min(since, t - 3600, dayStart)).first(),
+    env.DB.prepare(`SELECT k.id, k.clicked_at, k.country, k.device, l.code, l.campaign, l.community_id, c.name AS community
+      FROM clicks k JOIN links l ON l.code = k.code LEFT JOIN communities c ON c.id = l.community_id
+      WHERE k.is_bot = 0 ORDER BY k.clicked_at DESC, k.id DESC LIMIT 15`).all(),
+  ]);
+  return { now: t, fresh: counts.fresh || 0, last_hour: counts.last_hour || 0, today: counts.today || 0, today_unique: counts.today_unique || 0, recent: recent.results };
+}
+
 // ---------- one-click tracking: settings, bot status, GitHub control ----------
 // Brings an already-deployed database up to date (runs once per Worker instance, costs ~2 queries).
 let schemaReady = false;
@@ -480,6 +498,7 @@ async function ensureSchema(env) {
     env.DB.prepare('CREATE INDEX IF NOT EXISTS sends_batch ON sends(batch_id)'),
     env.DB.prepare('CREATE TABLE IF NOT EXISTS media (key TEXT PRIMARY KEY, name TEXT, type TEXT, size INTEGER, chunks INTEGER, created_at INTEGER)'),
     env.DB.prepare('CREATE TABLE IF NOT EXISTS media_chunks (key TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB, PRIMARY KEY (key, idx))'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_clicks_time ON clicks(clicked_at)'), // live click feed
   ]);
   const ccols = (await env.DB.prepare('PRAGMA table_info(communities)').all()).results.map(r => r.name);
   if (ccols.length && !ccols.includes('wa_created_at')) {
