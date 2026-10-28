@@ -866,6 +866,7 @@ CREATE TABLE clicks (
   is_bot        INTEGER DEFAULT 0          -- link-preview fetchers & crawlers, excluded from stats
 );
 INSERT INTO "clicks" ("id","code","clicked_at","visitor_hash","country","device","is_bot") VALUES(1,'sRbWJc',1793127308,'2d759988efc850bab6f6','IN','desktop',0);
+INSERT INTO "clicks" ("id","code","clicked_at","visitor_hash","country","device","is_bot") VALUES(2,'funnel-agent-replay-3b',1793173744,'58a3e61a47d576490202','IN','desktop',0);
 CREATE TABLE messages (
   id            TEXT PRIMARY KEY,          -- WhatsApp message id
   community_id  TEXT NOT NULL,
@@ -1926,7 +1927,7 @@ INSERT INTO "kv" ("key","value","updated_at") VALUES('groups','{"at":1793167600,
 INSERT INTO "kv" ("key","value","updated_at") VALUES('last_ingest','{"at":1793167602,"partial":false,"ok":true,"communities":1,"messages":2,"received_messages":2,"saved_in_db":1022,"sample":{"id":"true_120363413706041255@g.us_3EB07A69578A445ED6DE78_102208024637533@lid","wa_chat_id":"120363413706041255@g.us","known_group":true}}',1793167603);
 DELETE FROM sqlite_sequence;
 INSERT INTO "sqlite_sequence" ("name","seq") VALUES('sync_runs',10);
-INSERT INTO "sqlite_sequence" ("name","seq") VALUES('clicks',1);
+INSERT INTO "sqlite_sequence" ("name","seq") VALUES('clicks',2);
 CREATE INDEX idx_links_comm ON links(community_id);
 CREATE INDEX idx_links_campaign ON links(campaign);
 CREATE INDEX idx_clicks_code ON clicks(code, clicked_at);

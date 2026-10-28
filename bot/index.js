@@ -6,9 +6,11 @@
 //
 //   MODE=login  -> link the WhatsApp account (pairing code or QR shown on the dashboard), then sync
 //   MODE=sync   -> normal run (default)
+//   MODE=send   -> post the messages queued on the dashboard's message composer, then stop
+// Every run (sync, send or login) first posts any queued messages, one community at a time.
 
 const fs = require('fs');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const ChatFactory = require('whatsapp-web.js/src/factories/ChatFactory');
 
 const env = process.env;
@@ -26,7 +28,13 @@ const GROUP_FILTER = env.GROUP_NAME_FILTER ? new RegExp(env.GROUP_NAME_FILTER, '
 const PAIR_PHONE = (env.PAIR_PHONE || '').replace(/\D/g, '');
 const RUN_ID = env.GITHUB_RUN_ID || null;
 const EVENT = env.GITHUB_EVENT_NAME || 'manual';
-const HARD_TIMEOUT_MS = Number(env.HARD_TIMEOUT_MIN || 21) * 60 * 1000;
+// 21 min for a normal sync; 55 min when messages are waiting to be sent (the workflow allows 60)
+let HARD_TIMEOUT_MS = Number(env.HARD_TIMEOUT_MIN || 21) * 60 * 1000;
+const SEND_TIMEOUT_MS = Number(env.SEND_TIMEOUT_MIN || 55) * 60 * 1000;
+// Sending: random pause between communities so WhatsApp doesn't see a burst of identical messages
+const SEND_GAP_MIN_S = Number(env.SEND_GAP_MIN || 30);
+const SEND_GAP_MAX_S = Math.max(SEND_GAP_MIN_S, Number(env.SEND_GAP_MAX || 90));
+const MAX_SENDS_PER_RUN = Number(env.MAX_SENDS_PER_RUN || 40);
 // Stop starting new groups after this long; groups not reached are read first next run.
 const READ_BUDGET_MS = Number(env.READ_BUDGET_MIN || 13) * 60 * 1000;
 const UPLOAD_EVERY = 5; // save results to the dashboard every 5 groups
@@ -93,8 +101,9 @@ let readyAt = 0;
   try { config = { ...config, ...(await api('/api/bot/config')) }; }
   catch (e) { log('Could not read dashboard settings, using defaults:', e.message); }
   if (LOOKBACK_OVERRIDE) config.lookback_days = LOOKBACK_OVERRIDE;
+  if (MODE === 'send' || Number(config.queued_sends) > 0) HARD_TIMEOUT_MS = Math.max(HARD_TIMEOUT_MS, SEND_TIMEOUT_MS);
 
-  if (EVENT === 'schedule' && !config.enabled) {
+  if (EVENT === 'schedule' && !config.enabled && !(Number(config.queued_sends) > 0)) {
     log('Tracking is paused on the dashboard. Nothing to do.');
     process.exit(0);
   }
@@ -147,6 +156,11 @@ let readyAt = 0;
     try {
       await status('connected', { message: 'Connected. Loading chats…' });
       await sleep(MODE === 'login' ? 45000 : 15000); // a fresh link needs longer to load chats
+      const sent = await sendQueued();
+      if (MODE === 'send') {
+        const msg = sent.total ? `Sent ${sent.sent} of ${sent.total} messages` + (sent.failed ? `, ${sent.failed} failed (see the composer)` : '') + (sent.left ? `. ${sent.left} more go out in the next run` : '') : 'No messages were waiting to be sent';
+        return finish(0, null, 'done', { message: msg, mode: 'send' });
+      }
       const report = await collect();
       await finish(0, report, 'done', {
         message: report.summary,
@@ -200,6 +214,62 @@ async function getGroupChats() {
   });
   log(`Read ${chats.length} groups from ${total} chats (${skipped} could not be read and were skipped)`);
   return chats.map(c => ChatFactory.create(client, c)).filter(c => c && c.isGroup);
+}
+
+// ---------- sending queued messages (message composer) ----------
+// Each community gets its own copy of the message with its own tracked links. One at a time, with a random
+// 30-90 s pause, only into groups where this number may post. A message is "claimed" before sending, so it is
+// never sent twice, even if two runs overlap.
+async function fetchMedia(job) {
+  const res = await fetch(TRACKER_URL + '/api/bot/media/' + encodeURIComponent(job.media_key), { headers: { authorization: `Bearer ${INGEST_TOKEN}` } });
+  if (!res.ok) throw new Error('Could not download the attached file (' + res.status + ')');
+  const buf = Buffer.from(await res.arrayBuffer());
+  return new MessageMedia(job.media_type || res.headers.get('content-type') || 'application/octet-stream', buf.toString('base64'), job.media_name || 'file');
+}
+async function sendQueued() {
+  let jobs = [];
+  try { jobs = (await api('/api/bot/sends')).sends || []; } catch (e) { log('Could not read queued messages:', e.message); return { total: 0, sent: 0, failed: 0, left: 0 }; }
+  if (!jobs.length) return { total: 0, sent: 0, failed: 0, left: 0 };
+  const me = client.info && client.info.wid && client.info.wid._serialized;
+  const total = jobs.length, todo = jobs.slice(0, MAX_SENDS_PER_RUN);
+  log(`Sending ${todo.length} of ${total} queued messages`);
+  const mediaCache = {};
+  let sent = 0, failed = 0, done = 0;
+  for (const [i, job] of todo.entries()) {
+    if (Date.now() - T0 > HARD_TIMEOUT_MS - SAFETY_MARGIN_MS - 2 * 60000) { log('Out of time; the rest are sent in the next run'); break; }
+    if (i > 0) {
+      const gap = Math.round(SEND_GAP_MIN_S + Math.random() * (SEND_GAP_MAX_S - SEND_GAP_MIN_S));
+      await status('sending', { mode: 'send', message: `Sent ${sent} of ${todo.length}. Next community in ${gap}s (spaced out so WhatsApp doesn't flag it)`, progress: { done: i, total: todo.length, unit: 'messages' } });
+      await sleep(gap * 1000);
+    }
+    let claim = null;
+    try { claim = await api(`/api/bot/sends/${job.id}`, { status: 'sending' }); } catch (e) { log('  ! could not claim', job.id, e.message); }
+    if (!claim || !claim.go) { log(`  - skipped ${job.community} (cancelled or already taken)`); continue; }
+    await status('sending', { mode: 'send', message: `Sending to ${job.community}`, progress: { done: i, total: todo.length, unit: 'messages' } });
+    try {
+      const chat = await client.getChatById(job.wa_chat_id);
+      if (!chat || !chat.isGroup) throw new Error('The linked WhatsApp number is not in this group');
+      const md = chat.groupMetadata || {};
+      const mine = (md.participants || []).find(p => p.id && p.id._serialized === me);
+      if (md.announce && mine && !mine.isAdmin && !mine.isSuperAdmin) throw new Error('The linked WhatsApp number is not an admin here, so it can\'t post. Make it admin, or post this one yourself.');
+      let msg;
+      if (job.media_key) {
+        const media = mediaCache[job.media_key] || (mediaCache[job.media_key] = await fetchMedia(job));
+        msg = await chat.sendMessage(media, { caption: job.body, sendMediaAsDocument: !/^(image|video)\//.test(media.mimetype) });
+      } else {
+        msg = await chat.sendMessage(job.body);
+      }
+      await api(`/api/bot/sends/${job.id}`, { status: 'sent', wa_message_id: msg && msg.id && msg.id._serialized });
+      sent++; log(`  ✓ sent to ${job.community}`);
+    } catch (e) {
+      failed++; log(`  ✗ ${job.community}: ${e.message || e}`);
+      try { await api(`/api/bot/sends/${job.id}`, { status: 'failed', error: String(e.message || e) }); } catch {}
+    }
+    done = i + 1;
+  }
+  const left = total - done;
+  if (left > 0) { try { await api('/api/bot/sends/continue', {}); log(`${left} messages left; asked for another run`); } catch (e) { log('Could not ask for another run:', e.message); } }
+  return { total, sent, failed, left };
 }
 
 async function collect() {

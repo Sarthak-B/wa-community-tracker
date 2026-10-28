@@ -41,3 +41,20 @@
 - **Hiding never breaks a link.** The link list's ✕ is now **Hide**: the link leaves the list but keeps redirecting and counting clicks, since it may already be posted. "Show hidden links" lists them again with **Unhide**.
 - **Smart fallback.** If the tracker or its database can't be reached, a link like `/funnel-agent-replay-3b` sends the visitor to `https://sb.flexifunnels.com/funnel-agent-replay` (the page it was made for) instead of the homepage. Only that click goes uncounted. Applies in both the Pages short-link worker and the tracker.
 - Old random-code links (e.g. `sRbWJc`) also work on the pages.dev address; `/dashboard`, `/health` and `/api` can never be reached through it.
+
+# Update 10 (2026-10-28): message composer + auto-send
+- **Message composer** (top of Link builder): paste a message once, optionally attach a JPG/PNG/WEBP, MP4 or PDF (max 16 MB, message = caption, max 1,024 characters), tick communities, **Make messages**. Every link in the message gets its own tracked link per community (same link twice in a message = same tracked link); links that are already tracker links are left alone. One copy per community, with Copy, Mark posted, Retry and status. Earlier batches are listed under "Earlier messages".
+- **Auto-send**: the bot posts each community's own copy, one at a time, with a random 30-90 s pause (repo variables `SEND_GAP_MIN` / `SEND_GAP_MAX`), max 40 per run (`MAX_SENDS_PER_RUN`, the rest continue in a follow-up run). WhatsApp's 5-chat forward limit doesn't apply: every message is a new message, not a forward. It checks the number is an admin of announcement groups first. Each message is claimed before sending, so it is never sent twice; a message the bot was sending when a run died is marked "Check WhatsApp", never resent automatically. "Stop sending" cancels what hasn't gone out.
+- Every run (scheduled sync, Sync now, link, send) sends queued messages first, so a scheduled sync can't knock a send out of GitHub's queue. Workflow: new `send` mode, job limit 60 min (bot extends its own timeout to 55 min only when messages are queued), session restored for every mode except login.
+- New tables `sends`, `media`, `media_chunks` are created automatically (no SQL to run). Media older than 30 days that no unsent message needs is deleted.
+- Risk: automated posting through WhatsApp Web is against WhatsApp's terms and can get the linked number banned. Use the second admin number, never the main business number.
+
+# Update 11 (2026-10-28): formatting editor in the message composer
+- The message box is now a small editor with **B**, *I*, ~S~, monospace, bullet list, numbered list, quote and Clear (shortcuts ⌘B, ⌘I, ⌘⇧X, ⌘E). Formatting is sent with WhatsApp's own markers: *bold*, _italic_, ~strike~, ```mono```; lines starting "- ", "1. " or "> " show as lists / quotes in WhatsApp. Spaces at the edge of a selection are kept outside the markers (WhatsApp ignores "* text *").
+- Pasting an existing WhatsApp message turns its *markers* into visible formatting (plain text only, no stray styles from other apps); what is sent is identical to what was pasted.
+- "How it will look on WhatsApp" preview (applies WhatsApp's own rules, so e.g. 2*3*4 stays plain) and the exact text that is sent. Each community's copy is shown formatted; Copy message copies the markers, so pasting into WhatsApp keeps the formatting.
+
+# Update 12 (2026-10-28): simple "Send a message" for anyone
+- Link builder tab renamed **Send message & links**. The composer is now 4 numbered steps (name, message, optional file, communities) and **Create messages**; results show **Send to all N** / **Send it**, **Copy**, **I posted it**, **Try again**, **Stop**. Toolbar trimmed to Bold, Italic, Strike, List (⌘B / ⌘I still work; pasted WhatsApp *markers* still become formatting). UTM tags always on. All texts and error messages rewritten in plain words.
+- The old link-only form is now "Only need links?".
+- wrangler.toml SHORT_BASE set to https://flexisb.pages.dev.

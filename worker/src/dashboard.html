@@ -107,6 +107,34 @@ tr:last-child td { border-bottom: 0; }
 .field > span { font-size: 12px; font-weight: 500; color: var(--text-2); }
 .result-link { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .result-link code { font-size: 13px; color: var(--accent); word-break: break-all; }
+.wa-toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px; border: 1px solid var(--border); border-bottom: 0; border-radius: 8px 8px 0 0; background: var(--surface-2); }
+.wa-toolbar button { border: 1px solid transparent; background: transparent; color: var(--text); border-radius: 6px; padding: 4px 9px; font: 13px Inter, system-ui, sans-serif; cursor: pointer; min-width: 30px; }
+.wa-toolbar button:hover { background: var(--surface); border-color: var(--border); }
+.wa-toolbar button.on { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+.stepno { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; margin-right: 6px; }
+.senditem .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.wa-toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
+.wa-editor { min-height: 170px; max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 0 0 8px 8px; padding: 10px 12px; background: var(--surface); color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; outline: none; }
+.wa-editor:focus { border-color: var(--accent); }
+.wa-editor:empty::before { content: attr(data-ph); color: var(--muted); }
+.wa-editor code, .wa-bubble code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: var(--surface-2); border-radius: 4px; padding: 0 3px; }
+.wa-prev { margin-top: 8px; font-size: 13px; }
+.wa-prev summary { cursor: pointer; color: var(--text-2); }
+.wa-bubble, .senditem .wa-bubble { white-space: pre-wrap; word-break: break-word; background: #dcf8c6; color: #111b21; border-radius: 8px; padding: 8px 10px; margin-top: 6px; font: 14px/1.45 system-ui, sans-serif; max-height: 220px; overflow: auto; }
+.wa-bubble .q { display: block; border-left: 3px solid #25d366; padding-left: 8px; color: #54656f; }
+#cRaw { white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+.compose textarea { width: 100%; min-height: 170px; resize: vertical; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; font: inherit; line-height: 1.45; }
+.found { font-size: 13px; color: var(--text-2); margin: 6px 0 12px; }
+.found code { color: var(--accent); word-break: break-all; }
+.sendlist { display: grid; gap: 10px; max-height: 720px; overflow: auto; }
+.senditem { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.senditem .head { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.senditem pre { white-space: pre-wrap; word-break: break-word; margin: 0 0 8px; font: 13px/1.45 Inter, system-ui, sans-serif; color: var(--text-2); max-height: 150px; overflow: auto; background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+.st { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--grid); color: var(--text-2); white-space: nowrap; }
+.st.sent, .st.posted { background: var(--good-bg); color: var(--good); }
+.st.failed, .st.unknown { background: var(--bad-bg); color: var(--bad); }
+.st.queued, .st.sending { background: var(--seq-1); color: var(--text); }
+.warnbox { font-size: 13px; color: var(--text-2); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin: 8px 0 10px; }
 #login { max-width: 360px; margin: 12vh auto; }
 .hidden { display: none !important; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -192,7 +220,7 @@ tr:last-child td { border-bottom: 0; }
       <button data-tab="leader" class="on">Community leaderboard</button>
       <button data-tab="campaigns">Campaigns</button>
       <button data-tab="messages">Messages</button>
-      <button data-tab="links">Link builder</button>
+      <button data-tab="links">Send message &amp; links</button>
     </nav>
 
     <!-- LEADERBOARD -->
@@ -251,10 +279,45 @@ tr:last-child td { border-bottom: 0; }
 
     <!-- LINK BUILDER -->
     <section id="tab-links" class="hidden">
+      <!-- SEND A MESSAGE: one message in, one copy per community out (each with its own tracked links) -->
+      <div class="grid2 compose">
+        <div class="card">
+          <h2>Send a message to your communities</h2>
+          <p class="hint">Write it once. Each community gets its own copy with its own links, so you can see which community clicks most.</p>
+          <form id="composeForm">
+            <label class="field"><span><span class="stepno">1</span> Give it a name</span><input type="text" id="cCampaign" placeholder="e.g. 30 Oct webinar reminder" required></label>
+            <div class="field"><span class="row" style="justify-content:space-between"><span><span class="stepno">2</span> Write the message</span><span class="muted" style="font-weight:400;font-size:12px" id="cCount"></span></span>
+              <div class="wa-toolbar" id="waBar" role="toolbar" aria-label="Text style">
+                <button type="button" data-fmt="bold" title="Bold (⌘B)"><b>B</b> Bold</button>
+                <button type="button" data-fmt="italic" title="Italic (⌘I)"><i>I</i> Italic</button>
+                <button type="button" data-fmt="strike" title="Strike through"><s>S</s> Strike</button>
+                <button type="button" data-line="- " title="Start this line as a bullet point">• List</button>
+              </div>
+              <div class="wa-editor" id="cEditor" contenteditable="true" spellcheck="true" data-ph="Type or paste your message here, with the link. To make words bold, select them and click Bold."></div>
+              <textarea id="cMsg" hidden></textarea>
+              <div class="found" id="cFound"></div>
+              <details class="wa-prev"><summary>See how it looks on WhatsApp</summary><div class="wa-bubble" id="cPreview"></div><code id="cRaw" hidden></code></details>
+            </div>
+            <label class="field"><span><span class="stepno">3</span> Add a photo, video or PDF <span class="muted" style="font-weight:400">(optional)</span></span><input type="file" id="cFile" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf"><span class="muted" style="font-weight:400" id="cFileHint">Max 16 MB. With a file, keep the message under 1,024 characters.</span></label>
+            <input type="checkbox" id="cUtm" checked hidden>
+            <div class="field"><span class="row" style="justify-content:space-between"><span><span class="stepno">4</span> Pick communities</span><button type="button" class="btn small" id="cSelAll">Select all</button></span><div class="checks" id="cChecks"></div></div>
+            <button class="btn primary big" id="cMake">Create messages</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;align-items:flex-start">
+            <div><h2 id="cResTitle">Your messages</h2><p class="hint" id="cResHint" style="margin:0">They appear here, one per community.</p></div>
+            <div class="row"><button class="btn primary hidden" id="cSendAll">Send to all</button><button class="btn ghost hidden" id="cCancel">Stop</button></div>
+          </div>
+          <div class="warnbox hidden" id="cWarn"></div>
+          <div class="sendlist" id="cResults"><div class="empty">Nothing here yet. Fill in the steps on the left and click Create messages.</div></div>
+          <div style="margin-top:14px"><label class="row sub">Past messages <select id="cHistory"><option value="">Choose…</option></select></label></div>
+        </div>
+      </div>
       <div class="grid2">
         <div class="card">
-          <h2>Create tracked links</h2>
-          <p class="hint">One short link per community, so every click is credited to the right community. Paste each link into that community's message.</p>
+          <h2>Only need links?</h2>
+          <p class="hint">Makes one link per community without writing a message. Paste each link into that community's post.</p>
           <form id="linkForm">
             <label class="field"><span>Campaign name</span><input type="text" id="campaign" placeholder="e.g. Diwali webinar invite" required></label>
             <label class="field"><span>Where the link should go</span><input type="url" id="dest" placeholder="https://…" required></label>
@@ -360,7 +423,7 @@ tr:last-child td { border-bottom: 0; }
       links = lr.links; if (lr.short_base) shortBase = lr.short_base; updatePreview();
     } catch (e) { if (e.message !== 'unauthorized') toast(e.message); return; }
     computeScores();
-    renderSync(); renderKpis(); renderLeader(); renderCharts(); renderCampaigns(); renderMessages(); renderCommChecks(); renderLinkTable();
+    renderSync(); renderKpis(); renderLeader(); renderCharts(); renderCampaigns(); renderMessages(); renderCommChecks(); renderLinkTable(); renderComposeChecks(); initCompose();
   }
 
   // Overall score weights. Read rate counts for less because WhatsApp only gives read info for
@@ -629,6 +692,257 @@ tr:last-child td { border-bottom: 0; }
   });
   $('#showHidden').onchange = renderLinkTable;
 
+  // ---- message composer: one message in, one copy per community out ----
+  const URL_RE_C = /https?:\/\/[^\s<>"'`]+/gi;
+  const cleanU = u => u.replace(/[).,!?;:*_~'"\]]+$/, '');
+  const ownHost = h => /flexicommunities\.workers\.dev$/.test(h) || h === shortBase.replace(/^https?:\/\//, '').split('/')[0];
+  const ST = { draft: 'Not sent', queued: 'In line', sending: 'Sending now…', sent: 'Sent ✓', posted: 'Sent ✓', failed: 'Not sent: problem', cancelled: 'Stopped', unknown: 'Please check WhatsApp' };
+  let batch = null, batchPoll = null, composeReady = false;
+
+  function renderComposeChecks() {
+    const checked = new Set([...document.querySelectorAll('#cChecks input:checked')].map(i => i.value));
+    $('#cChecks').innerHTML = communities.length ? communities.map(c => `<label><input type="checkbox" value="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="muted" style="font-size:12px">${[c.member_count ? fmt(c.member_count) + ' members' : '', c.wa_chat_id ? '' : 'post yourself'].filter(Boolean).join(' · ')}</span></label>`).join('')
+      : '<div class="muted">No communities yet. Click Sync now at the top of the page.</div>';
+  }
+  $('#cSelAll').onclick = () => { const boxes = [...document.querySelectorAll('#cChecks input')]; const all = boxes.every(b => b.checked); boxes.forEach(b => b.checked = !all); };
+
+  function updateFound() {
+    const text = $('#cMsg').value;
+    const urls = [...new Set([...text.matchAll(URL_RE_C)].map(m => cleanU(m[0])))];
+    const track = urls.filter(u => { try { return !ownHost(new URL(u).hostname); } catch { return false; } });
+    const f = $('#cFile').files[0];
+    let html = !text.trim() ? ''
+      : track.length ? `✓ ${track.length === 1 ? '1 link found' : track.length + ' links found'}. Each community gets its own version, so clicks are counted per community.`
+      : 'No link in this message, so clicks won\'t be counted. That\'s fine for a plain announcement.';
+    if (f && text.length > 1024) html += `<br><span style="color:var(--bad)">Too long for a message with a file: ${fmt(text.length)} of 1,024 characters. Shorten it, or remove the file.</span>`;
+    if (f && f.size > 16 * 1024 * 1024) html += `<br><span style="color:var(--bad)">This file is ${(f.size / 1048576).toFixed(1)} MB. The limit is 16 MB.</span>`;
+    $('#cFound').innerHTML = html;
+  }
+  // ---- WhatsApp formatting editor ----
+  // What you format here is sent with WhatsApp's own markers: *bold* _italic_ ~strike~ ```mono```,
+  // and lines starting with "- ", "1. " or "> " become lists / quotes in WhatsApp.
+  const ed = $('#cEditor');
+  const BLOCKS = new Set(['DIV', 'P', 'LI', 'H1', 'H2', 'H3', 'H4', 'BLOCKQUOTE', 'PRE', 'UL', 'OL']);
+  function fmtOf(el, f) {
+    const t = el.tagName, st = el.style || {};
+    return {
+      b: f.b || t === 'B' || t === 'STRONG' || st.fontWeight === 'bold' || Number(st.fontWeight) >= 600,
+      i: f.i || t === 'I' || t === 'EM' || st.fontStyle === 'italic',
+      s: f.s || t === 'S' || t === 'STRIKE' || t === 'DEL' || /line-through/.test(st.textDecoration || st.textDecorationLine || ''),
+      m: f.m || t === 'CODE' || t === 'TT' || t === 'PRE',
+    };
+  }
+  // editor -> WhatsApp text
+  function editorToWa(root) {
+    const segs = []; let out = '';
+    const push = (text, f) => { segs.push({ text, f }); out += text; };
+    const walk = (node, f) => {
+      for (const n of node.childNodes) {
+        if (n.nodeType === 3) { push(n.nodeValue.replace(/ /g, ' ').replace(/​/g, ''), f); continue; }
+        if (n.nodeType !== 1) continue;
+        if (n.tagName === 'BR') { push('\n', {}); continue; }
+        const block = BLOCKS.has(n.tagName);
+        if (block && out && !out.endsWith('\n')) push('\n', {});
+        walk(n, fmtOf(n, f));
+        if (block && n.tagName !== 'DIV' && n.tagName !== 'P' && !out.endsWith('\n')) push('\n', {});
+      }
+    };
+    walk(root, { b: false, i: false, s: false, m: false });
+    // merge neighbours with the same formatting, then wrap each formatted run in markers, per line
+    const key = f => `${+!!f.b}${+!!f.i}${+!!f.s}${+!!f.m}`;
+    const runs = [];
+    for (const g of segs) { const last = runs[runs.length - 1]; if (last && key(last.f) === key(g.f)) last.text += g.text; else runs.push({ text: g.text, f: g.f }); }
+    let wa = '';
+    for (const r of runs) {
+      const f = r.f, any = f.b || f.i || f.s || f.m;
+      if (!any) { wa += r.text; continue; }
+      const open = f.m ? '```' : (f.b ? '*' : '') + (f.i ? '_' : '') + (f.s ? '~' : '');
+      const close = f.m ? '```' : [...open].reverse().join('');
+      wa += r.text.split('\n').map(line => {
+        const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(line); // WhatsApp ignores markers next to spaces, so keep spaces outside
+        return m[2] ? m[1] + open + m[2] + close + m[3] : line;
+      }).join('\n');
+    }
+    return wa.replace(/\n+$/, '');
+  }
+  // WhatsApp text -> HTML (for pasting into the editor and for previews). Follows WhatsApp's rules:
+  // a marker only counts at a word edge and with no space just inside it, and never across lines.
+  const WA_MARKS = [['```', 'code'], ['`', 'code'], ['*', 'b'], ['_', 'i'], ['~', 's']];
+  function waInline(text) {
+    let best = null;
+    for (const [mk, tag] of WA_MARKS) {
+      const e = mk.replace(/[*]/g, '\\$&'); // only * needs escaping (unicode-mode regexes reject \` and \~)
+      const re = new RegExp(`(^|[\\s\\p{P}\\p{S}])${e}(?![\\s])((?:(?!${e}).)+?)(?<![\\s])${e}(?=$|[\\s\\p{P}\\p{S}])`, 'u');
+      const m = re.exec(text);
+      if (m && (!best || m.index + m[1].length < best.start)) best = { start: m.index + m[1].length, end: m.index + m[0].length, inner: m[2], tag, mk };
+    }
+    if (!best) return esc(text);
+    const inner = best.tag === 'code' ? esc(best.inner) : waInline(best.inner);
+    return esc(text.slice(0, best.start)) + `<${best.tag}>${inner}</${best.tag}>` + waInline(text.slice(best.end));
+  }
+  function waToHtml(text, forEditor) {
+    return String(text || '').split('\n').map(line => {
+      if (!forEditor && /^> /.test(line)) return `<span class="q">${waInline(line.slice(2))}</span>`;
+      return waInline(line);
+    }).join(forEditor ? '<br>' : '\n');
+  }
+  function syncEditor() {
+    const wa = editorToWa(ed);
+    $('#cMsg').value = wa;
+    $('#cPreview').innerHTML = wa ? waToHtml(wa) : '<span class="muted">Nothing yet</span>';
+    $('#cRaw').textContent = wa || '–';
+    $('#cCount').textContent = wa && $('#cFile').files[0] ? `${fmt(wa.length)} / 1,024` : '';
+    updateFound(); updateBar();
+  }
+  function updateBar() {
+    const st = { bold: document.queryCommandState('bold'), italic: document.queryCommandState('italic'), strike: document.queryCommandState('strikeThrough') };
+    const sel = getSelection(); let n = sel.rangeCount ? sel.getRangeAt(0).startContainer : null; let mono = false;
+    while (n && n !== ed) { if (n.nodeType === 1 && (n.tagName === 'CODE')) { mono = true; break; } n = n.parentNode; }
+    st.mono = mono;
+    document.querySelectorAll('#waBar [data-fmt]').forEach(b => b.classList.toggle('on', !!st[b.dataset.fmt]));
+  }
+  function toggleMono() {
+    const sel = getSelection(); if (!sel.rangeCount || !ed.contains(sel.anchorNode)) return;
+    let n = sel.anchorNode; while (n && n !== ed && !(n.nodeType === 1 && n.tagName === 'CODE')) n = n.parentNode;
+    if (n && n !== ed) { n.replaceWith(...n.childNodes); return; } // already monospace: undo it
+    const r = sel.getRangeAt(0); if (r.collapsed) return toast('Select some text first');
+    const code = document.createElement('code'); code.appendChild(r.extractContents()); r.insertNode(code);
+    sel.removeAllRanges(); const nr = document.createRange(); nr.selectNodeContents(code); sel.addRange(nr);
+  }
+  function lineStart(prefix) {
+    ed.focus();
+    const sel = getSelection(); if (!sel.rangeCount) return;
+    if (sel.modify) { sel.collapseToStart(); sel.modify('move', 'backward', 'lineboundary'); }
+    document.execCommand('insertText', false, prefix);
+  }
+  function applyFmt(cmd) {
+    ed.focus();
+    if (cmd === 'bold') document.execCommand('bold');
+    else if (cmd === 'italic') document.execCommand('italic');
+    else if (cmd === 'strike') document.execCommand('strikeThrough');
+    else if (cmd === 'mono') toggleMono();
+    else if (cmd === 'clear') { document.execCommand('removeFormat'); const sel = getSelection(); if (sel.rangeCount) ed.querySelectorAll('code').forEach(c => { if (sel.containsNode(c, true)) c.replaceWith(...c.childNodes); }); }
+    syncEditor();
+  }
+  $('#waBar').addEventListener('mousedown', e => { if (e.target.closest('button')) e.preventDefault(); }); // keep the selection
+  $('#waBar').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.dataset.fmt) applyFmt(b.dataset.fmt); else if (b.dataset.line) { lineStart(b.dataset.line); syncEditor(); }
+  });
+  ed.addEventListener('keydown', e => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const k = e.key.toLowerCase();
+    if (k === 'b' || k === 'i') { e.preventDefault(); applyFmt(k === 'b' ? 'bold' : 'italic'); }
+    else if (k === 'x' && e.shiftKey) { e.preventDefault(); applyFmt('strike'); }
+    else if (k === 'e') { e.preventDefault(); applyFmt('mono'); }
+  });
+  // pasting: plain text only (no stray styles from other apps); WhatsApp markers in it become real formatting
+  ed.addEventListener('paste', e => {
+    e.preventDefault();
+    const t = (e.clipboardData || window.clipboardData).getData('text/plain').replace(/\r\n/g, '\n');
+    document.execCommand('insertHTML', false, waToHtml(t, true));
+    syncEditor();
+  });
+  ed.addEventListener('input', syncEditor);
+  document.addEventListener('selectionchange', () => { if (ed.contains(getSelection().anchorNode)) updateBar(); });
+  window.__wa = { editorToWa, waToHtml }; // used by tests
+  $('#cFile').addEventListener('change', syncEditor);
+
+  $('#composeForm').onsubmit = async e => {
+    e.preventDefault();
+    syncEditor();
+    if (!$('#cMsg').value.trim()) { $('#cEditor').focus(); return toast('Write the message first'); }
+    const ids = [...document.querySelectorAll('#cChecks input:checked')].map(i => i.value);
+    if (!ids.length) return toast('Pick at least one community (step 4)');
+    const btn = $('#cMake'); btn.disabled = true; btn.textContent = 'Working…';
+    try {
+      let media_key = null;
+      const f = $('#cFile').files[0];
+      if (f) {
+        if (f.size > 16 * 1024 * 1024) throw new Error('The file is larger than 16 MB');
+        btn.textContent = 'Uploading the file…';
+        const res = await fetch('/api/media', { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': f.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(f.name) }, body: f });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || 'Upload failed');
+        media_key = j.key;
+      }
+      btn.textContent = 'Creating messages…';
+      const r = await api('/api/compose', { method: 'POST', body: JSON.stringify({ campaign: $('#cCampaign').value, message: $('#cMsg').value, community_ids: ids, add_utm: $('#cUtm').checked, media_key }) });
+      batch = r; store.set('wct_batch', r.batch_id);
+      renderBatch(); loadHistory();
+      toast(`${r.items.length} ${r.items.length === 1 ? 'message' : 'messages'} ready`);
+      try { links = (await api('/api/links')).links; renderLinkTable(); } catch {}
+    } catch (err) { toast(err.message); }
+    finally { btn.disabled = false; btn.textContent = 'Create messages'; }
+  };
+
+  function renderBatch() {
+    clearTimeout(batchPoll);
+    const items = (batch && batch.items) || [];
+    if (!items.length) { $('#cResults').innerHTML = '<div class="empty">Nothing here yet. Fill in the steps on the left and click Create messages.</div>'; ['#cSendAll', '#cCancel', '#cWarn'].forEach(x => $(x).classList.add('hidden')); return; }
+    const sendable = items.filter(i => i.wa_chat_id && ['draft', 'failed', 'cancelled'].includes(i.status));
+    const pending = items.filter(i => ['queued', 'sending'].includes(i.status));
+    const done = items.filter(i => ['sent', 'posted'].includes(i.status)).length;
+    const media = items[0].media_name;
+    $('#cResTitle').textContent = items[0].campaign || 'Your messages';
+    $('#cResHint').textContent = `${done} of ${items.length} sent` + (media ? ` · with ${media}` : '');
+    const sendBtn = $('#cSendAll');
+    sendBtn.classList.toggle('hidden', !sendable.length || !!pending.length);
+    sendBtn.textContent = sendable.length === 1 ? 'Send it' : `Send to all ${sendable.length}`;
+    $('#cCancel').classList.toggle('hidden', !pending.length);
+    const notes = [];
+    if (pending.length) notes.push(`<b>Sending…</b> One community at a time, with a short pause in between (this keeps WhatsApp happy). About ${Math.ceil(pending.length * 1.05) + 2} minutes. You can close this page.`);
+    else if (sendable.length) notes.push(`Click <b>${sendable.length === 1 ? 'Send it' : 'Send to all ' + sendable.length}</b> to post automatically, or use <b>Copy</b> to post yourself.`);
+    if (media && !pending.length) notes.push(`Posting yourself? <b>Copy</b> gives the text only. Attach <b>${esc(media)}</b> too.`);
+    $('#cWarn').innerHTML = notes.join('<br>'); $('#cWarn').classList.toggle('hidden', !notes.length);
+    $('#cResults').innerHTML = items.map(i => {
+      const acts = [];
+      if (i.wa_chat_id && ['failed', 'cancelled', 'unknown'].includes(i.status)) acts.push(`<button class="btn small" data-retry="${i.id}">Try again</button>`);
+      if (['draft', 'failed', 'cancelled', 'unknown'].includes(i.status)) acts.push(`<button class="btn small ghost" data-mark="${i.id}" title="Click after you posted it yourself">I posted it</button>`);
+      if (i.status === 'posted') acts.push(`<button class="btn small ghost" data-unmark="${i.id}">Undo</button>`);
+      if (!i.wa_chat_id) acts.push('<span class="muted" style="font-size:12px">Post this one yourself</span>');
+      return `<div class="senditem"><div class="head"><b>${esc(i.community || i.community_id)}</b><span class="st ${esc(i.status)}">${ST[i.status] || esc(i.status)}${i.sent_at && ['sent', 'posted'].includes(i.status) ? ' · ' + new Date(i.sent_at * 1000).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}</span></div>
+        ${i.error ? `<div class="sub" style="color:var(--bad);margin-bottom:6px">${esc(i.error)}</div>` : ''}<div class="wa-bubble">${waToHtml(i.body)}</div>
+        <div class="acts"><button class="btn small" data-copy="${esc(i.body)}">Copy</button>${acts.join('')}</div></div>`;
+    }).join('');
+    if (pending.length) batchPoll = setTimeout(() => loadBatch(batch.batch_id), 5000);
+  }
+  async function loadBatch(id) {
+    try { batch = await api('/api/sends?batch_id=' + encodeURIComponent(id)); renderBatch(); } catch (e) { if (e.message !== 'unauthorized') toast(e.message); }
+  }
+  async function loadHistory() {
+    try {
+      const { batches } = await api('/api/sends');
+      const cur = batch && batch.batch_id;
+      $('#cHistory').innerHTML = '<option value="">Choose…</option>' + batches.map(b => `<option value="${esc(b.batch_id)}" ${b.batch_id === cur ? 'selected' : ''}>${new Date(b.created_at * 1000).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · ${esc(b.campaign)} (${(b.sent || 0) + (b.posted || 0)} of ${b.total} sent${b.failed ? ', ' + b.failed + ' with a problem' : ''})</option>`).join('');
+    } catch {}
+  }
+  $('#cHistory').onchange = e => { if (e.target.value) { store.set('wct_batch', e.target.value); loadBatch(e.target.value); } };
+  $('#cResults').addEventListener('click', async e => {
+    const m = e.target.closest('[data-mark],[data-unmark],[data-retry]'); if (!m) return;
+    try {
+      if (m.dataset.retry) await api('/api/sends/start', { method: 'POST', body: JSON.stringify({ batch_id: batch.batch_id, ids: [Number(m.dataset.retry)] }) }), loadTracking();
+      else await api('/api/sends/mark', { method: 'POST', body: JSON.stringify({ id: Number(m.dataset.mark || m.dataset.unmark), undo: !!m.dataset.unmark }) });
+      await loadBatch(batch.batch_id); loadHistory();
+    } catch (err) { toast(err.message); }
+  });
+  $('#cSendAll').onclick = async () => {
+    const n = batch.items.filter(i => i.wa_chat_id && ['draft', 'failed', 'cancelled'].includes(i.status)).length;
+    if (!ts || !ts.linked) return toast('WhatsApp isn\'t connected. Use the button at the top of the page first.');
+    const mins = Math.ceil(n * 1.05) + 2;
+    if (!confirm(`Send to ${n} ${n > 1 ? 'communities' : 'community'} now?\n\nIt takes about ${mins} minutes. You can close this page meanwhile.`)) return;
+    try { const r = await api('/api/sends/start', { method: 'POST', body: JSON.stringify({ batch_id: batch.batch_id }) }); toast(r.queued ? 'Sending starts in 1–2 minutes' : 'Nothing to send'); await loadBatch(batch.batch_id); loadHistory(); loadTracking(); } catch (err) { toast(err.message); }
+  };
+  $('#cCancel').onclick = async () => {
+    if (!confirm('Stop sending?\n\nCommunities that already got it keep it. The rest won\'t get it.')) return;
+    try { const r = await api('/api/sends/cancel', { method: 'POST', body: JSON.stringify({ batch_id: batch.batch_id }) }); toast(r.cancelled ? 'Stopped' : 'Already finished'); await loadBatch(batch.batch_id); loadHistory(); } catch (err) { toast(err.message); }
+  };
+  function initCompose() {
+    if (composeReady) return; composeReady = true;
+    loadHistory();
+    const b = store.get('wct_batch'); if (b) loadBatch(b);
+  }
+
   // ================= ONE-CLICK TRACKING =================
   const ACTIVE = new Set(['queued', 'starting', 'pairing', 'qr', 'connected', 'reading', 'uploading']);
   let ts = null, pollTimer = null, wasActive = false, qrShown = null, groupsSel = null, lastKey = '', forceLink = false;
@@ -727,10 +1041,11 @@ tr:last-child td { border-bottom: 0; }
 
   function renderProgress(el, ph, logLink) {
     const st = ph.st || {}, stage = ph.stage;
-    const linking = (st.mode || (ts.status || {}).mode) === 'login';
-    const order = linking ? ['setup', 'link', 'read', 'done'] : ['setup', 'read', 'done'];
-    const cur = ['queued', 'starting'].includes(stage) ? 'setup' : ['pairing', 'qr'].includes(stage) ? 'link' : ['connected', 'reading', 'uploading'].includes(stage) ? 'read' : 'done';
-    const label = { setup: ['Starting', 'Preparing the bot (about 1–2 min)'], link: ['Link WhatsApp', 'Enter the code on your phone'], read: ['Reading messages', 'Checking reads, reactions, replies'], done: ['Dashboard updated', 'Results appear below'] };
+    const mode = st.mode || (ts.status || {}).mode;
+    const linking = mode === 'login', sending = mode === 'send' || stage === 'sending';
+    const order = linking ? ['setup', 'link', 'read', 'done'] : sending ? ['setup', 'send', 'done'] : ['setup', 'read', 'done'];
+    const cur = ['queued', 'starting'].includes(stage) ? 'setup' : ['pairing', 'qr'].includes(stage) ? 'link' : stage === 'sending' || (sending && stage === 'connected') ? 'send' : ['connected', 'reading', 'uploading'].includes(stage) ? 'read' : 'done';
+    const label = { setup: ['Starting', 'Preparing the bot (about 1–2 min)'], link: ['Link WhatsApp', 'Enter the code on your phone'], read: ['Reading messages', 'Checking reads, reactions, replies'], send: ['Sending messages', 'One community at a time'], done: [sending ? 'Messages sent' : 'Dashboard updated', sending ? 'See the composer in Link builder' : 'Results appear below'] };
     const ci = order.indexOf(cur);
     const steps = `<div class="steps" style="grid-template-columns:repeat(${order.length},1fr)">${order.map((k, i) => `<div class="step ${i < ci ? 'done' : i === ci ? 'now' : ''}"><b>${i + 1}. ${label[k][0]}</b>${label[k][1]}</div>`).join('')}</div>`;
 
@@ -742,11 +1057,11 @@ tr:last-child td { border-bottom: 0; }
       body = `<div class="pair"><div id="qrBox"></div><ol><li>Open WhatsApp on the admin phone</li><li>Settings → <b>Linked devices</b> → <b>Link a device</b></li><li>Point the camera at this QR code</li></ol></div>`;
     } else if (st.progress && st.progress.total) {
       const pc = Math.round(st.progress.done / st.progress.total * 100);
-      body += `<div class="bar" style="margin-top:8px"><div style="width:${Math.max(3, pc)}%"></div></div><div class="sub" style="margin-top:4px">${st.progress.done} of ${st.progress.total} groups</div>`;
+      body += `<div class="bar" style="margin-top:8px"><div style="width:${Math.max(3, pc)}%"></div></div><div class="sub" style="margin-top:4px">${st.progress.done} of ${st.progress.total} ${st.progress.unit || 'groups'}</div>`;
     }
     const keepQr = stage === 'qr' && st.qr && qrShown === st.qr && $('#qrBox');
     if (keepQr) return; // don't redraw (avoids flicker) until the QR changes
-    el.innerHTML = `<div class="track-head"><div class="track-title"><span class="dot busy"></span>${linking ? 'Linking WhatsApp and syncing' : 'Syncing WhatsApp'}</div><div class="sub">${logLink}</div></div>${steps}${body}`;
+    el.innerHTML = `<div class="track-head"><div class="track-title"><span class="dot busy"></span>${linking ? 'Linking WhatsApp and syncing' : sending ? 'Posting messages to your communities' : 'Syncing WhatsApp'}</div><div class="sub">${logLink}</div></div>${steps}${body}`;
     if (stage === 'qr' && st.qr && window.QRCode) { new QRCode($('#qrBox'), { text: st.qr, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.L }); qrShown = st.qr; }
   }
 

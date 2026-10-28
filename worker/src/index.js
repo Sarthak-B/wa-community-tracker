@@ -44,9 +44,14 @@ export default {
         if (!authorized(request, env.INGEST_TOKEN)) return json({ error: 'unauthorized' }, 401);
         if (path === '/api/bot/config' && request.method === 'GET') {
           const { results } = await env.DB.prepare('SELECT wa_chat_id, updated_at FROM communities WHERE wa_chat_id IS NOT NULL').all();
-          return json({ ...(await getConfig(env)), last_read: Object.fromEntries(results.map(r => [r.wa_chat_id, r.updated_at])) });
+          const q = await env.DB.prepare("SELECT COUNT(*) AS n FROM sends WHERE status = 'queued'").first();
+          return json({ ...(await getConfig(env)), queued_sends: q ? q.n : 0, last_read: Object.fromEntries(results.map(r => [r.wa_chat_id, r.updated_at])) });
         }
         if (path === '/api/bot/status' && request.method === 'POST') return json(await botStatus(await request.json(), env));
+        if (path === '/api/bot/sends' && request.method === 'GET') return json(await botSends(env));
+        if (path === '/api/bot/sends/continue' && request.method === 'POST') return json(await continueSends(env));
+        if (/^\/api\/bot\/sends\/\d+$/.test(path) && request.method === 'POST') return json(await botSendUpdate(Number(path.split('/').pop()), await request.json(), env));
+        if (path.startsWith('/api/bot/media/') && request.method === 'GET') return mediaResponse(decodeURIComponent(path.split('/').pop()), env);
         return json({ error: 'not found' }, 404);
       }
       if (path.startsWith('/api/')) {
@@ -71,6 +76,14 @@ export default {
           await env.DB.prepare('UPDATE links SET deleted_at = ? WHERE code = ?').bind(now(), decodeURIComponent(path.split('/').pop())).run();
           return json({ ok: true });
         }
+        // --- message composer & sending ---
+        if (path === '/api/media' && request.method === 'POST') return json(await uploadMedia(request, env));
+        if (path === '/api/compose' && request.method === 'POST') return json(await compose(await request.json(), env, url.origin));
+        if (path === '/api/sends' && request.method === 'GET') return json(await listSends(url, env));
+        if (path === '/api/sends/start' && request.method === 'POST') return json(await startSends(await request.json(), env));
+        if (path === '/api/sends/cancel' && request.method === 'POST') return json(await cancelSends(await request.json(), env));
+        if (path === '/api/sends/mark' && request.method === 'POST') return json(await markSend(await request.json(), env));
+        if (path.startsWith('/api/media/') && request.method === 'GET') return mediaResponse(decodeURIComponent(path.split('/').pop()), env);
         if (/^\/api\/links\/[^/]+\/unhide$/.test(path) && request.method === 'POST') {
           await env.DB.prepare('UPDATE links SET deleted_at = NULL WHERE code = ?').bind(decodeURIComponent(path.split('/')[3])).run();
           return json({ ok: true });
@@ -456,6 +469,17 @@ async function ensureSchema(env) {
   if (cols.length && !cols.includes('deleted_at')) {
     try { await env.DB.prepare('ALTER TABLE links ADD COLUMN deleted_at INTEGER').run(); } catch (e) { /* added by a parallel request */ }
   }
+  // message composer: one row per community copy of a message; media stored in ~1 MB chunks
+  await env.DB.batch([
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS sends (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, campaign TEXT, community_id TEXT NOT NULL,
+      wa_chat_id TEXT, body TEXT NOT NULL, media_key TEXT, status TEXT NOT NULL DEFAULT 'draft', error TEXT,
+      wa_message_id TEXT, created_at INTEGER NOT NULL, queued_at INTEGER, sent_at INTEGER, updated_at INTEGER)`),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS sends_status ON sends(status, queued_at)'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS sends_batch ON sends(batch_id)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS media (key TEXT PRIMARY KEY, name TEXT, type TEXT, size INTEGER, chunks INTEGER, created_at INTEGER)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS media_chunks (key TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB, PRIMARY KEY (key, idx))'),
+  ]);
   const ccols = (await env.DB.prepare('PRAGMA table_info(communities)').all()).results.map(r => r.name);
   if (ccols.length && !ccols.includes('wa_created_at')) {
     try { await env.DB.prepare('ALTER TABLE communities ADD COLUMN wa_created_at INTEGER').run(); } catch (e) { /* added by a parallel request */ }
@@ -567,4 +591,169 @@ async function startTracking(body, env) {
   await gh.dispatch(action === 'link' ? { mode: 'login', pair_phone: phone } : { mode: 'sync' });
   await kvSet(env, 'bot_status', { stage: 'queued', mode: action === 'link' ? 'login' : 'sync', message: busy ? 'Waiting for the current sync to finish' : '', at: now() });
   return { ok: true, started: action, queued: !!busy };
+}
+
+// ---------- message composer: one message, a personal copy per community ----------
+// Finds every link in a message, makes a tracked link per community for each, and stores one copy of the
+// message per community (status draft). Copies are pasted by hand or sent by the bot (status queued).
+const URL_IN_TEXT = /https?:\/\/[^\s<>"'`]+/gi;
+const MAX_MEDIA_BYTES = 16 * 1024 * 1024; // WhatsApp's practical limit for media sent this way
+const CHUNK = 1000000;                    // D1 rows stay under its 2 MB limit
+const CAPTION_LIMIT = 1024;               // WhatsApp caption limit for images / videos / documents
+const cleanUrl = u => u.replace(/[).,!?;:*_~'"\]]+$/, '');
+
+function ownHosts(env) {
+  const hosts = new Set(['sb.flexicommunities.workers.dev', 'wa-community-tracker.flexicommunities.workers.dev']);
+  try { hosts.add(new URL(shortBase(env, null)).hostname); } catch (e) {}
+  return hosts;
+}
+
+async function compose(body, env, origin) {
+  const campaign = String(body.campaign || '').trim();
+  const message = String(body.message || '').replace(/\r\n/g, '\n');
+  const ids = Array.isArray(body.community_ids) ? body.community_ids.map(String) : [];
+  if (!campaign) throw new Error('Campaign name is required');
+  if (!message.trim()) throw new Error('Paste the message first');
+  if (!ids.length) throw new Error('Tick at least one community');
+  let media = null;
+  if (body.media_key) {
+    media = await env.DB.prepare('SELECT key, name, type, size FROM media WHERE key = ?').bind(String(body.media_key)).first();
+    if (!media) throw new Error('The attached file was not found. Attach it again.');
+    if (message.length > CAPTION_LIMIT) throw new Error(`With an image, video or PDF, WhatsApp allows up to ${CAPTION_LIMIT.toLocaleString('en-IN')} characters of text. This message has ${message.length.toLocaleString('en-IN')}.`);
+  }
+  const comms = new Map((await env.DB.prepare('SELECT id, name, wa_chat_id FROM communities').all()).results.map(r => [r.id, r]));
+  const picked = ids.map(id => comms.get(id)).filter(Boolean);
+  if (!picked.length) throw new Error('None of the ticked communities exist any more. Refresh the page.');
+
+  // every distinct link in the message, except links that are already tracker links
+  const own = ownHosts(env);
+  const urls = [...new Set([...message.matchAll(URL_IN_TEXT)].map(m => cleanUrl(m[0])))]
+    .filter(u => { try { return !own.has(new URL(u).hostname.toLowerCase()); } catch (e) { return false; } });
+
+  // url -> community_id -> short link
+  const map = {};
+  for (const u of urls) {
+    const r = await createLinks({ campaign, destination: u, community_ids: picked.map(c => c.id), add_utm: body.add_utm !== false }, env, origin);
+    map[u] = Object.fromEntries(r.links.map(l => [l.community_id, l.short_url]));
+  }
+  const personalise = cid => message.replace(URL_IN_TEXT, m => {
+    const u = cleanUrl(m);
+    return map[u] && map[u][cid] ? map[u][cid] + m.slice(u.length) : m;
+  });
+
+  const batch = 'b' + now().toString(36) + randomCode(4);
+  const t = now();
+  const items = picked.map(c => ({ community_id: c.id, community: c.name, wa_chat_id: c.wa_chat_id || null, body: personalise(c.id) }));
+  await env.DB.batch(items.map(it => env.DB.prepare('INSERT INTO sends (batch_id, campaign, community_id, wa_chat_id, body, media_key, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .bind(batch, campaign, it.community_id, it.wa_chat_id, it.body, media ? media.key : null, 'draft', t, t)));
+  return { batch_id: batch, ...(await listSends(new URL('http://x/?batch_id=' + batch), env)), links_found: urls };
+}
+
+async function listSends(url, env) {
+  const batch = url.searchParams.get('batch_id');
+  const cols = `s.id, s.batch_id, s.campaign, s.community_id, c.name AS community, s.wa_chat_id, s.body, s.media_key,
+    m.name AS media_name, m.type AS media_type, s.status, s.error, s.created_at, s.queued_at, s.sent_at`;
+  if (batch) {
+    const { results } = await env.DB.prepare(`SELECT ${cols} FROM sends s LEFT JOIN communities c ON c.id = s.community_id LEFT JOIN media m ON m.key = s.media_key WHERE s.batch_id = ? ORDER BY s.id`).bind(batch).all();
+    return { batch_id: batch, items: results };
+  }
+  const { results } = await env.DB.prepare(`SELECT batch_id, MIN(campaign) AS campaign, MIN(created_at) AS created_at, COUNT(*) AS total,
+      SUM(status = 'sent') AS sent, SUM(status = 'posted') AS posted, SUM(status IN ('queued','sending')) AS pending,
+      SUM(status IN ('failed','unknown')) AS failed, MAX(media_key IS NOT NULL) AS has_media
+    FROM sends GROUP BY batch_id ORDER BY created_at DESC LIMIT 30`).all();
+  return { batches: results };
+}
+
+async function startSends(body, env) {
+  const gh = github(env);
+  if (!gh) throw new Error('Auto-send needs the Start button set up (GH_TOKEN and GH_REPO secrets).');
+  const linked = await kvGet(env, 'linked', { linked: false });
+  if (!linked.linked) throw new Error('WhatsApp is not linked. Link it on the dashboard first.');
+  const batch = String(body.batch_id || '');
+  const only = Array.isArray(body.ids) && body.ids.length ? body.ids.map(Number).filter(Boolean) : null;
+  const t = now();
+  const res = await env.DB.prepare(`UPDATE sends SET status = 'queued', error = NULL, queued_at = ?, updated_at = ?
+      WHERE batch_id = ? AND wa_chat_id IS NOT NULL AND status IN ('draft','failed','cancelled')${only ? ` AND id IN (${only.map(() => '?').join(',')})` : ''}`)
+    .bind(t, t, batch, ...(only || [])).run();
+  const n = res.meta ? res.meta.changes : 0;
+  if (!n) return { ok: true, queued: 0 };
+  await setConfig(env, { enabled: true });
+  // a run that is already going picks the queue up only if it hasn't passed its sending step, so always ask for one more;
+  // GitHub runs it right after the current one (and every run, sync or send, sends queued messages first)
+  await gh.dispatch({ mode: 'send' });
+  await kvSet(env, 'bot_status', { stage: 'queued', mode: 'send', message: `Sending to ${n} communities starts in 1–2 minutes`, at: now() });
+  return { ok: true, queued: n };
+}
+async function continueSends(env) {
+  const gh = github(env);
+  const q = await env.DB.prepare("SELECT COUNT(*) AS n FROM sends WHERE status = 'queued'").first();
+  if (gh && q && q.n) { await gh.dispatch({ mode: 'send' }); return { ok: true, dispatched: true, left: q.n }; }
+  return { ok: true, dispatched: false };
+}
+async function cancelSends(body, env) {
+  const res = await env.DB.prepare("UPDATE sends SET status = 'cancelled', updated_at = ? WHERE batch_id = ? AND status = 'queued'").bind(now(), String(body.batch_id || '')).run();
+  return { ok: true, cancelled: res.meta ? res.meta.changes : 0 };
+}
+async function markSend(body, env) {
+  // "Posted by hand" (or undo); never touches a message the bot is sending or has sent
+  const to = body.undo ? 'draft' : 'posted';
+  const from = body.undo ? "('posted')" : "('draft','failed','cancelled','unknown')";
+  await env.DB.prepare(`UPDATE sends SET status = ?, sent_at = ?, updated_at = ? WHERE id = ? AND status IN ${from}`).bind(to, body.undo ? null : now(), now(), Number(body.id)).run();
+  return { ok: true };
+}
+
+// --- bot side ---
+async function botSends(env) {
+  const t = now();
+  // a run that died mid-send: we can't know if WhatsApp got it, so never resend automatically
+  await env.DB.prepare("UPDATE sends SET status = 'unknown', error = 'Not sure if this one went out. Look in the community on WhatsApp: if it is there, click I posted it, otherwise Try again.', updated_at = ? WHERE status = 'sending' AND updated_at < ?")
+    .bind(t, t - 1800).run();
+  const { results } = await env.DB.prepare(`SELECT s.id, s.wa_chat_id, s.body, s.media_key, m.name AS media_name, m.type AS media_type, c.name AS community
+      FROM sends s LEFT JOIN media m ON m.key = s.media_key LEFT JOIN communities c ON c.id = s.community_id
+      WHERE s.status = 'queued' AND s.wa_chat_id IS NOT NULL ORDER BY s.queued_at, s.id LIMIT 200`).all();
+  return { sends: results };
+}
+async function botSendUpdate(id, body, env) {
+  const t = now();
+  if (body.status === 'sending') {
+    // claim it: only one run can move a message from queued to sending, so nothing is sent twice
+    const r = await env.DB.prepare("UPDATE sends SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'queued'").bind(t, id).run();
+    return { ok: true, go: !!(r.meta && r.meta.changes) };
+  }
+  const status = body.status === 'sent' ? 'sent' : 'failed';
+  await env.DB.prepare("UPDATE sends SET status = ?, error = ?, wa_message_id = ?, sent_at = ?, updated_at = ? WHERE id = ? AND status = 'sending'")
+    .bind(status, status === 'failed' ? String(body.error || 'Failed').slice(0, 300) : null, body.wa_message_id ? String(body.wa_message_id) : null, status === 'sent' ? t : null, t, id).run();
+  return { ok: true };
+}
+
+// --- media (image / video / PDF), stored in the database in chunks ---
+async function uploadMedia(request, env) {
+  const type = (request.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+  const name = decodeURIComponent(request.headers.get('x-file-name') || 'file').slice(0, 120);
+  const buf = new Uint8Array(await request.arrayBuffer());
+  if (!buf.length) throw new Error('The file is empty');
+  if (buf.length > MAX_MEDIA_BYTES) throw new Error('The file is larger than 16 MB. Compress it, or post it by hand.');
+  if (!/^(image\/(jpeg|png|webp)|video\/(mp4|3gpp)|application\/pdf)$/.test(type)) throw new Error('Use a JPG, PNG or WEBP image, an MP4 video, or a PDF.');
+  const key = 'm' + now().toString(36) + randomCode(6);
+  const n = Math.ceil(buf.length / CHUNK);
+  const stmts = [env.DB.prepare('INSERT INTO media (key, name, type, size, chunks, created_at) VALUES (?,?,?,?,?,?)').bind(key, name, type, buf.length, n, now())];
+  for (let i = 0; i < n; i++) stmts.push(env.DB.prepare('INSERT INTO media_chunks (key, idx, data) VALUES (?,?,?)').bind(key, i, buf.slice(i * CHUNK, (i + 1) * CHUNK)));
+  for (let i = 0; i < stmts.length; i += 5) await env.DB.batch(stmts.slice(i, i + 5));
+  // tidy up: files from more than 30 days ago that no unsent message needs
+  try {
+    const old = now() - 30 * 86400;
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM media_chunks WHERE key IN (SELECT key FROM media WHERE created_at < ? AND key NOT IN (SELECT media_key FROM sends WHERE media_key IS NOT NULL AND status IN ('draft','queued','sending')))").bind(old),
+      env.DB.prepare("DELETE FROM media WHERE created_at < ? AND key NOT IN (SELECT media_key FROM sends WHERE media_key IS NOT NULL AND status IN ('draft','queued','sending'))").bind(old),
+    ]);
+  } catch (e) {}
+  return { key, name, type, size: buf.length };
+}
+async function mediaResponse(key, env) {
+  const m = await env.DB.prepare('SELECT name, type, size FROM media WHERE key = ?').bind(key).first();
+  if (!m) return json({ error: 'not found' }, 404);
+  const { results } = await env.DB.prepare('SELECT data FROM media_chunks WHERE key = ? ORDER BY idx').bind(key).all();
+  const out = new Uint8Array(m.size); let off = 0;
+  for (const r of results) { const d = new Uint8Array(r.data); out.set(d, off); off += d.length; }
+  return new Response(out, { headers: { 'content-type': m.type, 'content-disposition': `inline; filename="${encodeURIComponent(m.name)}"`, 'x-file-name': encodeURIComponent(m.name), 'cache-control': 'no-store' } });
 }

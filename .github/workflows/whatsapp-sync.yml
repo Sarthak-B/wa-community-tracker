@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "sync = normal run, login = link the WhatsApp account"
+        description: "sync = normal run, login = link the WhatsApp account, send = post messages queued in the composer"
         type: choice
-        options: [sync, login]
+        options: [sync, login, send]
         default: sync
       pair_phone:
         description: "For login only: WhatsApp number with country code (e.g. 919876543210). Empty = QR code on the dashboard."
@@ -27,7 +27,8 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # normal syncs finish in a few minutes; sending waits 30-90 s between communities, so allow up to an hour
+    timeout-minutes: 60
     env:
       MODE: ${{ inputs.mode || 'sync' }}
       PAIR_PHONE: ${{ inputs.pair_phone }}
@@ -39,6 +40,9 @@ jobs:
       MAX_MESSAGES_PER_GROUP: ${{ vars.MAX_MESSAGES_PER_GROUP }}
       COUNT_ADMIN_POSTS: ${{ vars.COUNT_ADMIN_POSTS }}
       STALE_HOURS: ${{ vars.STALE_HOURS }}
+      SEND_GAP_MIN: ${{ vars.SEND_GAP_MIN }}
+      SEND_GAP_MAX: ${{ vars.SEND_GAP_MAX }}
+      MAX_SENDS_PER_RUN: ${{ vars.MAX_SENDS_PER_RUN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -68,7 +72,7 @@ jobs:
       # The WhatsApp session is stored encrypted in the Actions cache.
       # SESSION_KEY is a repo secret, so even someone who can read the cache can't use it.
       - name: Restore saved WhatsApp session
-        if: env.MODE == 'sync'
+        if: env.MODE != 'login'
         uses: actions/cache/restore@v4
         with:
           path: session.tar.gz.enc
@@ -76,7 +80,7 @@ jobs:
           restore-keys: wa-session-
 
       - name: Decrypt session
-        if: env.MODE == 'sync'
+        if: env.MODE != 'login'
         working-directory: bot
         run: |
           if [ -f ../session.tar.gz.enc ]; then

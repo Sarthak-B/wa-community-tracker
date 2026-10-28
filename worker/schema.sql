@@ -64,3 +64,16 @@ CREATE TABLE IF NOT EXISTS kv (
   value         TEXT,
   updated_at    INTEGER
 );
+
+-- Message composer: one row per community copy of a message (draft -> queued -> sending -> sent / failed;
+-- posted = pasted by hand; unknown = the bot stopped mid-send, never resent automatically)
+CREATE TABLE IF NOT EXISTS sends (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, campaign TEXT, community_id TEXT NOT NULL,
+  wa_chat_id TEXT, body TEXT NOT NULL, media_key TEXT, status TEXT NOT NULL DEFAULT 'draft', error TEXT,
+  wa_message_id TEXT, created_at INTEGER NOT NULL, queued_at INTEGER, sent_at INTEGER, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS sends_status ON sends(status, queued_at);
+CREATE INDEX IF NOT EXISTS sends_batch ON sends(batch_id);
+-- Attached image / video / PDF, stored in ~1 MB chunks (D1 rows max 2 MB)
+CREATE TABLE IF NOT EXISTS media (key TEXT PRIMARY KEY, name TEXT, type TEXT, size INTEGER, chunks INTEGER, created_at INTEGER);
+CREATE TABLE IF NOT EXISTS media_chunks (key TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB, PRIMARY KEY (key, idx));
