@@ -32,9 +32,13 @@ const EVENT = env.GITHUB_EVENT_NAME || 'manual';
 let HARD_TIMEOUT_MS = Number(env.HARD_TIMEOUT_MIN || 21) * 60 * 1000;
 const SEND_TIMEOUT_MS = Number(env.SEND_TIMEOUT_MIN || 55) * 60 * 1000;
 // Sending: random pause between communities so WhatsApp doesn't see a burst of identical messages
-const SEND_GAP_MIN_S = Number(env.SEND_GAP_MIN || 30);
-const SEND_GAP_MAX_S = Math.max(SEND_GAP_MIN_S, Number(env.SEND_GAP_MAX || 90));
-const MAX_SENDS_PER_RUN = Number(env.MAX_SENDS_PER_RUN || 40);
+// Safety for the WhatsApp number: random 45-120 s pause between communities, a "typing…" moment before each
+// message, at most 20 per run and 40 per 24 hours, and a full stop after 2 problems in a row.
+const SEND_GAP_MIN_S = Math.max(20, Number(env.SEND_GAP_MIN || 45));
+const SEND_GAP_MAX_S = Math.max(SEND_GAP_MIN_S, Number(env.SEND_GAP_MAX || 120));
+const MAX_SENDS_PER_RUN = Number(env.MAX_SENDS_PER_RUN || 20);
+const MAX_SENDS_PER_DAY = Number(env.MAX_SENDS_PER_DAY || 40);
+const STOP_AFTER_FAILS = Number(env.STOP_AFTER_FAILS || 2);
 // Stop starting new groups after this long; groups not reached are read first next run.
 const READ_BUDGET_MS = Number(env.READ_BUDGET_MIN || 13) * 60 * 1000;
 const UPLOAD_EVERY = 5; // save results to the dashboard every 5 groups
@@ -158,7 +162,10 @@ let readyAt = 0;
       await sleep(MODE === 'login' ? 45000 : 15000); // a fresh link needs longer to load chats
       const sent = await sendQueued();
       if (MODE === 'send') {
-        const msg = sent.total ? `Sent ${sent.sent} of ${sent.total} messages` + (sent.failed ? `, ${sent.failed} failed (see the composer)` : '') + (sent.left ? `. ${sent.left} more go out in the next run` : '') : 'No messages were waiting to be sent';
+        const msg = !sent.total ? 'No messages were waiting to be sent'
+          : sent.limit ? `Daily safety limit reached (${MAX_SENDS_PER_DAY} messages in 24 hours). The rest go out automatically later.`
+          : sent.paused ? `Sending paused after ${STOP_AFTER_FAILS} problems in a row. ${sent.sent} sent. See Send message & links.`
+          : `${sent.sent} of ${sent.total} sent` + (sent.failed ? `, ${sent.failed} with a problem` : '') + (sent.left ? `. ${sent.left} more go out in the next run` : '');
         return finish(0, null, 'done', { message: msg, mode: 'send' });
       }
       const report = await collect();
@@ -226,49 +233,138 @@ async function fetchMedia(job) {
   const buf = Buffer.from(await res.arrayBuffer());
   return new MessageMedia(job.media_type || res.headers.get('content-type') || 'application/octet-stream', buf.toString('base64'), job.media_name || 'file');
 }
+// Sends one message straight through WhatsApp Web, without the library's two extra steps that break on
+// current WhatsApp Web ("Data passed to getter must include an id property"): marking the chat as seen
+// before sending, and re-reading the sent message afterwards. Each stage is named so an error says
+// whether the message could already have gone out.
+async function waSend(chatId, text, media, extra = {}) {
+  const opts = {
+    linkPreview: extra.linkPreview !== false, parseVCards: true, mentionedJidList: [], ignoreQuoteErrors: true, waitUntilMsgSent: false,
+    ...(media ? { media: { mimetype: media.mimetype, data: media.data, filename: media.filename },
+      caption: text, isCaptionByUser: true, sendMediaAsDocument: !/^(image|video)\//.test(media.mimetype) } : {}),
+  };
+  return client.pupPage.evaluate(async (chatId, content, opts) => {
+    let stage = 'open';
+    try {
+      const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
+      if (!chat) return { error: 'The linked WhatsApp number is not in this group', stage };
+      stage = 'send';
+      const msg = await window.WWebJS.sendMessage(chat, content, opts);
+      stage = 'after';
+      let id = null;
+      try { id = msg && msg.id ? (msg.id._serialized || String(msg.id)) : null; } catch (e) {}
+      return { ok: true, id };
+    } catch (e) {
+      return { error: String((e && e.message) || e).slice(0, 300), stage };
+    }
+  }, chatId, media ? '' : text, opts);
+}
+
+// After an unclear error: did the message land anyway? Looks for a message from this number in the
+// last 15 minutes whose text matches (each community's copy carries its own link, so this is exact).
+async function alreadyInChat(chatId, text) {
+  const want = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  if (!want) return false;
+  try {
+    return await client.pupPage.evaluate(async (chatId, want) => {
+      const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
+      if (!chat || !chat.msgs) return false;
+      const since = Date.now() / 1000 - 900;
+      return chat.msgs.getModelsArray().some(m => {
+        const mine = m.id ? m.id.fromMe : m.isSentByMe;
+        const body = String(m.body || m.caption || '').replace(/\s+/g, ' ').trim();
+        return mine && (m.t || 0) >= since && body.slice(0, 200) === want;
+      });
+    }, chatId, want);
+  } catch (e) { return false; }
+}
+
+async function showTyping(chatId, ms) {
+  try { await client.pupPage.evaluate(async (chatId) => { await window.WWebJS.sendChatstate('typing', chatId); }, chatId); } catch (e) {}
+  await sleep(ms);
+  try { await client.pupPage.evaluate(async (chatId) => { await window.WWebJS.sendChatstate('stop', chatId); }, chatId); } catch (e) {}
+}
+
+// WhatsApp Web's own errors are technical; say what they mean
+function plainError(e) {
+  const m = String((e && e.message) || e);
+  if (/getter must include an id|memoize|Evaluation failed|Protocol error|Target closed|Session closed/i.test(m)) return 'WhatsApp didn\'t accept this one (a glitch on WhatsApp\'s side). It was checked: it is not in the group. Click Try again later, or post it yourself.';
+  if (/timed? ?out/i.test(m)) return 'WhatsApp took too long to answer. It was checked: it is not in the group. Click Try again later, or post it yourself.';
+  if (/download the attached file/i.test(m)) return 'The attached file could not be loaded. Create the message again with the file, or post it yourself.';
+  return m.slice(0, 300);
+}
+
 async function sendQueued() {
-  let jobs = [];
-  try { jobs = (await api('/api/bot/sends')).sends || []; } catch (e) { log('Could not read queued messages:', e.message); return { total: 0, sent: 0, failed: 0, left: 0 }; }
+  let jobs = [], room = MAX_SENDS_PER_DAY;
+  try {
+    const r = await api('/api/bot/sends');
+    jobs = r.sends || [];
+    room = Math.max(0, MAX_SENDS_PER_DAY - Number(r.sent_last_24h || 0));
+  } catch (e) { log('Could not read queued messages:', e.message); return { total: 0, sent: 0, failed: 0, left: 0 }; }
   if (!jobs.length) return { total: 0, sent: 0, failed: 0, left: 0 };
+  if (!room) {
+    log(`Daily limit of ${MAX_SENDS_PER_DAY} messages reached; the rest wait`);
+    await status('sending', { mode: 'send', message: `Daily safety limit reached (${MAX_SENDS_PER_DAY} messages in 24 hours). The rest go out automatically later.` });
+    return { total: jobs.length, sent: 0, failed: 0, left: jobs.length, limit: true };
+  }
   const me = client.info && client.info.wid && client.info.wid._serialized;
-  const total = jobs.length, todo = jobs.slice(0, MAX_SENDS_PER_RUN);
-  log(`Sending ${todo.length} of ${total} queued messages`);
+  const total = jobs.length, todo = jobs.slice(0, Math.min(MAX_SENDS_PER_RUN, room));
+  log(`Sending ${todo.length} of ${total} queued messages (daily room ${room})`);
   const mediaCache = {};
-  let sent = 0, failed = 0, done = 0;
+  let sent = 0, failed = 0, done = 0, inARow = 0, paused = false;
   for (const [i, job] of todo.entries()) {
-    if (Date.now() - T0 > HARD_TIMEOUT_MS - SAFETY_MARGIN_MS - 2 * 60000) { log('Out of time; the rest are sent in the next run'); break; }
+    if (Date.now() - T0 > HARD_TIMEOUT_MS - SAFETY_MARGIN_MS - 3 * 60000) { log('Out of time; the rest are sent in the next run'); break; }
     if (i > 0) {
       const gap = Math.round(SEND_GAP_MIN_S + Math.random() * (SEND_GAP_MAX_S - SEND_GAP_MIN_S));
-      await status('sending', { mode: 'send', message: `Sent ${sent} of ${todo.length}. Next community in ${gap}s (spaced out so WhatsApp doesn't flag it)`, progress: { done: i, total: todo.length, unit: 'messages' } });
+      await status('sending', { mode: 'send', message: `${sent} of ${todo.length} sent. Next one in ${gap}s (a pause keeps the number safe)`, progress: { done: i, total: todo.length, unit: 'messages' } });
       await sleep(gap * 1000);
     }
     let claim = null;
     try { claim = await api(`/api/bot/sends/${job.id}`, { status: 'sending' }); } catch (e) { log('  ! could not claim', job.id, e.message); }
-    if (!claim || !claim.go) { log(`  - skipped ${job.community} (cancelled or already taken)`); continue; }
+    if (!claim || !claim.go) { log(`  - skipped ${job.community} (stopped or already taken)`); done = i + 1; continue; }
     await status('sending', { mode: 'send', message: `Sending to ${job.community}`, progress: { done: i, total: todo.length, unit: 'messages' } });
+    let result = null;
     try {
-      const chat = await client.getChatById(job.wa_chat_id);
-      if (!chat || !chat.isGroup) throw new Error('The linked WhatsApp number is not in this group');
-      const md = chat.groupMetadata || {};
-      const mine = (md.participants || []).find(p => p.id && p.id._serialized === me);
-      if (md.announce && mine && !mine.isAdmin && !mine.isSuperAdmin) throw new Error('The linked WhatsApp number is not an admin here, so it can\'t post. Make it admin, or post this one yourself.');
-      let msg;
-      if (job.media_key) {
-        const media = mediaCache[job.media_key] || (mediaCache[job.media_key] = await fetchMedia(job));
-        msg = await chat.sendMessage(media, { caption: job.body, sendMediaAsDocument: !/^(image|video)\//.test(media.mimetype) });
-      } else {
-        msg = await chat.sendMessage(job.body);
+      const chat = await client.getChatById(job.wa_chat_id).catch(() => null);
+      if (chat) {
+        const md = chat.groupMetadata || {};
+        const mine = (md.participants || []).find(p => p.id && p.id._serialized === me);
+        if (md.announce && mine && !mine.isAdmin && !mine.isSuperAdmin) throw new Error('The linked WhatsApp number is not an admin here, so it can\'t post. Make it admin, or post this one yourself.');
       }
-      await api(`/api/bot/sends/${job.id}`, { status: 'sent', wa_message_id: msg && msg.id && msg.id._serialized });
-      sent++; log(`  ✓ sent to ${job.community}`);
+      const media = job.media_key ? (mediaCache[job.media_key] || (mediaCache[job.media_key] = await fetchMedia(job))) : null;
+      await showTyping(job.wa_chat_id, 2000 + Math.random() * 3000); // like a person typing
+      result = await waSend(job.wa_chat_id, job.body, media);
+      if (result.error && result.stage !== 'open') {
+        // unclear whether it went out: look before calling it a failure, so nothing is ever posted twice
+        await sleep(6000);
+        if (await alreadyInChat(job.wa_chat_id, job.body)) { log(`  (error "${result.error}" but the message is in the group)`); result = { ok: true }; }
+        else if (result.stage === 'send') {
+          // not in the group: one careful retry without the link preview (the step most likely to trip)
+          log(`  (send failed: ${result.error}; retrying once without link preview)`);
+          await sleep(8000 + Math.random() * 7000);
+          const again = await waSend(job.wa_chat_id, job.body, media, { linkPreview: false });
+          if (!again.error) result = again;
+          else { await sleep(6000); if (await alreadyInChat(job.wa_chat_id, job.body)) result = { ok: true }; }
+        }
+      }
+      if (result.error) throw new Error(result.error);
+      await api(`/api/bot/sends/${job.id}`, { status: 'sent', wa_message_id: result.id || null });
+      sent++; inARow = 0; log(`  ✓ sent to ${job.community}`);
     } catch (e) {
-      failed++; log(`  ✗ ${job.community}: ${e.message || e}`);
-      try { await api(`/api/bot/sends/${job.id}`, { status: 'failed', error: String(e.message || e) }); } catch {}
+      failed++; inARow++; log(`  ✗ ${job.community}: ${e.message || e}`);
+      try { await api(`/api/bot/sends/${job.id}`, { status: 'failed', error: plainError(e) }); } catch {}
     }
     done = i + 1;
+    if (inARow >= STOP_AFTER_FAILS) { paused = true; break; }
+  }
+  if (paused) {
+    // protect the number: don't keep hammering WhatsApp; the rest wait for a person to look
+    log(`${STOP_AFTER_FAILS} problems in a row: sending paused`);
+    try { await api('/api/bot/sends/pause', { reason: `Not sent: sending paused after ${STOP_AFTER_FAILS} problems in a row, to keep the WhatsApp number safe. Fix the problem shown above, then click Try again.` }); } catch {}
+    return { total, sent, failed, left: 0, paused: true };
   }
   const left = total - done;
-  if (left > 0) { try { await api('/api/bot/sends/continue', {}); log(`${left} messages left; asked for another run`); } catch (e) { log('Could not ask for another run:', e.message); } }
+  if (left > 0 && room - sent > 0) { try { await api('/api/bot/sends/continue', {}); log(`${left} messages left; asked for another run`); } catch (e) { log('Could not ask for another run:', e.message); } }
   return { total, sent, failed, left };
 }
 

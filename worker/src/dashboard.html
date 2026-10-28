@@ -111,6 +111,13 @@ tr:last-child td { border-bottom: 0; }
 .wa-toolbar button { border: 1px solid transparent; background: transparent; color: var(--text); border-radius: 6px; padding: 4px 9px; font: 13px Inter, system-ui, sans-serif; cursor: pointer; min-width: 30px; }
 .wa-toolbar button:hover { background: var(--surface); border-color: var(--border); }
 .wa-toolbar button.on { background: var(--surface); border-color: var(--accent); color: var(--accent); }
+.sendbar { position: sticky; top: 0; z-index: 50; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.sendbar.done { border-left-color: var(--good); }
+.sendbar.bad { border-left-color: var(--bad); }
+.sendbar .top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sendbar .msg { font-size: 13px; color: var(--text-2); margin-top: 2px; }
+.sendbar .bar { margin-top: 8px; }
+.checks label.hide { display: none; }
 .stepno { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; margin-right: 6px; }
 .senditem .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .wa-toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
@@ -203,6 +210,7 @@ tr:last-child td { border-bottom: 0; }
       </div>
     </header>
 
+    <div id="sendBar" class="sendbar hidden" role="status" aria-live="polite"></div>
     <div id="trackCard" class="card track"><div class="sub">Checking WhatsApp tracking…</div></div>
 
     <div id="groupsPanel" class="card hidden">
@@ -286,21 +294,24 @@ tr:last-child td { border-bottom: 0; }
           <p class="hint">Write it once. Each community gets its own copy with its own links, so you can see which community clicks most.</p>
           <form id="composeForm">
             <label class="field"><span><span class="stepno">1</span> Give it a name</span><input type="text" id="cCampaign" placeholder="e.g. 30 Oct webinar reminder" required></label>
-            <div class="field"><span class="row" style="justify-content:space-between"><span><span class="stepno">2</span> Write the message</span><span class="muted" style="font-weight:400;font-size:12px" id="cCount"></span></span>
+            <label class="field"><span><span class="stepno">2</span> Paste the page link</span><input type="url" id="cLink" placeholder="https://sb.flexifunnels.com/your-page"><span class="muted" style="font-weight:400" id="cLinkHint">Each community gets its own version of this link, so clicks are counted per community.</span></label>
+            <div class="field"><span class="row" style="justify-content:space-between"><span><span class="stepno">3</span> Write the message <span class="muted" style="font-weight:400">(optional)</span></span><span class="muted" style="font-weight:400;font-size:12px" id="cCount"></span></span>
               <div class="wa-toolbar" id="waBar" role="toolbar" aria-label="Text style">
                 <button type="button" data-fmt="bold" title="Bold (⌘B)"><b>B</b> Bold</button>
                 <button type="button" data-fmt="italic" title="Italic (⌘I)"><i>I</i> Italic</button>
                 <button type="button" data-fmt="strike" title="Strike through"><s>S</s> Strike</button>
                 <button type="button" data-line="- " title="Start this line as a bullet point">• List</button>
               </div>
-              <div class="wa-editor" id="cEditor" contenteditable="true" spellcheck="true" data-ph="Type or paste your message here, with the link. To make words bold, select them and click Bold."></div>
+              <div class="wa-editor" id="cEditor" contenteditable="true" spellcheck="true" data-ph="Type or paste your message. If the page link is in it, it is swapped for each community's own link. If not, the link is added at the end. Leave this empty to get just the links."></div>
               <textarea id="cMsg" hidden></textarea>
               <div class="found" id="cFound"></div>
               <details class="wa-prev"><summary>See how it looks on WhatsApp</summary><div class="wa-bubble" id="cPreview"></div><code id="cRaw" hidden></code></details>
             </div>
-            <label class="field"><span><span class="stepno">3</span> Add a photo, video or PDF <span class="muted" style="font-weight:400">(optional)</span></span><input type="file" id="cFile" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf"><span class="muted" style="font-weight:400" id="cFileHint">Max 16 MB. With a file, keep the message under 1,024 characters.</span></label>
+            <label class="field"><span><span class="stepno">4</span> Add a photo, video or PDF <span class="muted" style="font-weight:400">(optional)</span></span><input type="file" id="cFile" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf"><span class="muted" style="font-weight:400" id="cFileHint">Max 16 MB. With a file, keep the message under 1,024 characters.</span></label>
             <input type="checkbox" id="cUtm" checked hidden>
-            <div class="field"><span class="row" style="justify-content:space-between"><span><span class="stepno">4</span> Pick communities</span><button type="button" class="btn small" id="cSelAll">Select all</button></span><div class="checks" id="cChecks"></div></div>
+            <div class="field"><span class="row" style="justify-content:space-between"><span><span class="stepno">5</span> Pick communities <span class="muted" style="font-weight:400" id="cPicked"></span></span><button type="button" class="btn small" id="cSelAll">Select all</button></span>
+              <input type="search" id="cSearch" placeholder="Search communities…" style="width:100%;margin-bottom:6px">
+              <div class="checks" id="cChecks"></div></div>
             <button class="btn primary big" id="cMake">Create messages</button>
           </form>
         </div>
@@ -314,7 +325,7 @@ tr:last-child td { border-bottom: 0; }
           <div style="margin-top:14px"><label class="row sub">Past messages <select id="cHistory"><option value="">Choose…</option></select></label></div>
         </div>
       </div>
-      <div class="grid2">
+      <div class="grid2 hidden" id="oldLinkForm"><!-- merged into "Send a message" above -->
         <div class="card">
           <h2>Only need links?</h2>
           <p class="hint">Makes one link per community without writing a message. Paste each link into that community's post.</p>
@@ -701,19 +712,37 @@ tr:last-child td { border-bottom: 0; }
 
   function renderComposeChecks() {
     const checked = new Set([...document.querySelectorAll('#cChecks input:checked')].map(i => i.value));
-    $('#cChecks').innerHTML = communities.length ? communities.map(c => `<label><input type="checkbox" value="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="muted" style="font-size:12px">${[c.member_count ? fmt(c.member_count) + ' members' : '', c.wa_chat_id ? '' : 'post yourself'].filter(Boolean).join(' · ')}</span></label>`).join('')
+    $('#cChecks').innerHTML = communities.length ? communities.map(c => `<label data-name="${esc(String(c.name).toLowerCase())}"><input type="checkbox" value="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="muted" style="font-size:12px">${[c.member_count ? fmt(c.member_count) + ' members' : '', c.wa_chat_id ? '' : 'post yourself'].filter(Boolean).join(' · ')}</span></label>`).join('')
       : '<div class="muted">No communities yet. Click Sync now at the top of the page.</div>';
+    filterChecks();
   }
-  $('#cSelAll').onclick = () => { const boxes = [...document.querySelectorAll('#cChecks input')]; const all = boxes.every(b => b.checked); boxes.forEach(b => b.checked = !all); };
+  function filterChecks() {
+    const q = $('#cSearch').value.trim().toLowerCase();
+    document.querySelectorAll('#cChecks label').forEach(l => l.classList.toggle('hide', !!q && !l.dataset.name.includes(q)));
+    const n = document.querySelectorAll('#cChecks input:checked').length;
+    $('#cPicked').textContent = n ? `· ${n} picked` : '';
+    $('#cSelAll').textContent = q ? 'Select these' : 'Select all';
+  }
+  $('#cSearch').addEventListener('input', filterChecks);
+  $('#cChecks').addEventListener('change', filterChecks);
+  // "Select all" works on what the search shows
+  $('#cSelAll').onclick = () => { const boxes = [...document.querySelectorAll('#cChecks label:not(.hide) input')]; const all = boxes.length && boxes.every(b => b.checked); boxes.forEach(b => b.checked = !all); filterChecks(); };
 
   function updateFound() {
     const text = $('#cMsg').value;
+    const link = cleanU($('#cLink').value.trim());
     const urls = [...new Set([...text.matchAll(URL_RE_C)].map(m => cleanU(m[0])))];
     const track = urls.filter(u => { try { return !ownHost(new URL(u).hostname); } catch { return false; } });
+    const others = track.filter(u => u !== link);
     const f = $('#cFile').files[0];
-    let html = !text.trim() ? ''
-      : track.length ? `✓ ${track.length === 1 ? '1 link found' : track.length + ' links found'}. Each community gets its own version, so clicks are counted per community.`
-      : 'No link in this message, so clicks won\'t be counted. That\'s fine for a plain announcement.';
+    let html;
+    if (link && !text.trim()) html = '✓ No message: you get just the link for each community.';
+    else if (link && urls.includes(link)) html = '✓ The page link is in your message. It will be swapped for each community\'s own link.';
+    else if (link) html = '✓ The page link isn\'t in your message, so it will be added at the end.';
+    else if (!text.trim()) html = '';
+    else if (track.length) html = `✓ ${track.length === 1 ? '1 link found' : track.length + ' links found'} in the message. Each community gets its own version.`;
+    else html = 'No link yet, so clicks won\'t be counted. Paste the page link in step 2, or leave it for a plain announcement.';
+    if (link && others.length) html += ` ${others.length === 1 ? 'The other link in the message is' : 'The other ' + others.length + ' links in the message are'} tracked too.`;
     if (f && text.length > 1024) html += `<br><span style="color:var(--bad)">Too long for a message with a file: ${fmt(text.length)} of 1,024 characters. Shorten it, or remove the file.</span>`;
     if (f && f.size > 16 * 1024 * 1024) html += `<br><span style="color:var(--bad)">This file is ${(f.size / 1048576).toFixed(1)} MB. The limit is 16 MB.</span>`;
     $('#cFound').innerHTML = html;
@@ -847,13 +876,48 @@ tr:last-child td { border-bottom: 0; }
   document.addEventListener('selectionchange', () => { if (ed.contains(getSelection().anchorNode)) updateBar(); });
   window.__wa = { editorToWa, waToHtml }; // used by tests
   $('#cFile').addEventListener('change', syncEditor);
+  $('#cLink').addEventListener('input', () => {
+    let slug = '';
+    try { slug = (new URL($('#cLink').value.trim()).pathname.split('/').filter(Boolean).pop() || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-'); } catch (e) {}
+    $('#cLinkHint').textContent = $('#cLink').value.trim()
+      ? `Each community gets its own link, like ${shortBase.replace(/^https?:\/\//, '')}/${slug ? slug + '-k7' : 'wa-k7'}`
+      : 'Each community gets its own version of this link, so clicks are counted per community.';
+    updateFound();
+  });
+
+  // ---- sending progress, shown at the top of every tab ----
+  function renderSendBar() {
+    const sb = ts && ts.sending, el = $('#sendBar');
+    if (!sb || !sb.total || store.get('wct_bar_closed') === sb.batch_id + ':' + (sb.pending ? 'p' : 'd')) { el.classList.add('hidden'); return; }
+    const st = ts.status || {};
+    const pct = Math.round((sb.done + sb.failed) / sb.total * 100);
+    let title, msg, cls = '';
+    if (sb.pending) {
+      title = `Sending “${esc(sb.campaign)}”: ${sb.done} of ${sb.total} sent`;
+      msg = st.mode === 'send' && st.message ? esc(st.message) : 'Starting in 1–2 minutes…';
+    } else {
+      cls = sb.failed ? 'bad' : 'done';
+      title = sb.failed ? `“${esc(sb.campaign)}”: ${sb.done} of ${sb.total} sent, ${sb.failed} with a problem` : `Done: “${esc(sb.campaign)}” sent to ${sb.done} of ${sb.total}`;
+      msg = sb.failed ? 'Open it to see what went wrong and use Try again.' : 'All messages are in the communities.';
+    }
+    el.className = 'sendbar ' + cls;
+    el.innerHTML = `<div class="top"><div><b>${sb.pending ? '📤 ' : sb.failed ? '⚠️ ' : '✓ '}${title}</b><div class="msg">${msg}</div></div>
+      <div class="row"><button class="btn small" id="sbView">View</button>${sb.pending ? '<button class="btn small ghost" id="sbStop">Stop</button>' : '<button class="btn small ghost" id="sbClose" title="Hide">✕</button>'}</div></div>
+      ${sb.pending ? `<div class="bar"><div style="width:${Math.max(3, pct)}%"></div></div>` : ''}`;
+    $('#sbView').onclick = () => { document.querySelector('#tabs button[data-tab="links"]').click(); store.set('wct_batch', sb.batch_id); loadBatch(sb.batch_id); loadHistory(); $('.compose').scrollIntoView({ behavior: 'smooth' }); };
+    const stop = $('#sbStop'); if (stop) stop.onclick = async () => {
+      if (!confirm('Stop sending?\n\nCommunities that already got it keep it. The rest won\'t get it.')) return;
+      try { await api('/api/sends/cancel', { method: 'POST', body: JSON.stringify({ batch_id: sb.batch_id }) }); toast('Stopped'); loadTracking(); if (batch && batch.batch_id === sb.batch_id) loadBatch(sb.batch_id); } catch (err) { toast(err.message); }
+    };
+    const close = $('#sbClose'); if (close) close.onclick = () => { store.set('wct_bar_closed', sb.batch_id + ':d'); el.classList.add('hidden'); };
+  }
 
   $('#composeForm').onsubmit = async e => {
     e.preventDefault();
     syncEditor();
-    if (!$('#cMsg').value.trim()) { $('#cEditor').focus(); return toast('Write the message first'); }
+    if (!$('#cMsg').value.trim() && !$('#cLink').value.trim()) { $('#cLink').focus(); return toast('Paste the page link (step 2) or write a message (step 3)'); }
     const ids = [...document.querySelectorAll('#cChecks input:checked')].map(i => i.value);
-    if (!ids.length) return toast('Pick at least one community (step 4)');
+    if (!ids.length) return toast('Pick at least one community (step 5)');
     const btn = $('#cMake'); btn.disabled = true; btn.textContent = 'Working…';
     try {
       let media_key = null;
@@ -867,7 +931,7 @@ tr:last-child td { border-bottom: 0; }
         media_key = j.key;
       }
       btn.textContent = 'Creating messages…';
-      const r = await api('/api/compose', { method: 'POST', body: JSON.stringify({ campaign: $('#cCampaign').value, message: $('#cMsg').value, community_ids: ids, add_utm: $('#cUtm').checked, media_key }) });
+      const r = await api('/api/compose', { method: 'POST', body: JSON.stringify({ campaign: $('#cCampaign').value, link: $('#cLink').value.trim(), message: $('#cMsg').value, community_ids: ids, add_utm: $('#cUtm').checked, media_key }) });
       batch = r; store.set('wct_batch', r.batch_id);
       renderBatch(); loadHistory();
       toast(`${r.items.length} ${r.items.length === 1 ? 'message' : 'messages'} ready`);
@@ -891,7 +955,7 @@ tr:last-child td { border-bottom: 0; }
     sendBtn.textContent = sendable.length === 1 ? 'Send it' : `Send to all ${sendable.length}`;
     $('#cCancel').classList.toggle('hidden', !pending.length);
     const notes = [];
-    if (pending.length) notes.push(`<b>Sending…</b> One community at a time, with a short pause in between (this keeps WhatsApp happy). About ${Math.ceil(pending.length * 1.05) + 2} minutes. You can close this page.`);
+    if (pending.length) notes.push(`<b>Sending…</b> One community at a time, with a short pause in between (this keeps WhatsApp happy). About ${Math.ceil(pending.length * 1.5) + 2} minutes. You can close this page or switch tabs: progress shows at the top.`);
     else if (sendable.length) notes.push(`Click <b>${sendable.length === 1 ? 'Send it' : 'Send to all ' + sendable.length}</b> to post automatically, or use <b>Copy</b> to post yourself.`);
     if (media && !pending.length) notes.push(`Posting yourself? <b>Copy</b> gives the text only. Attach <b>${esc(media)}</b> too.`);
     $('#cWarn').innerHTML = notes.join('<br>'); $('#cWarn').classList.toggle('hidden', !notes.length);
@@ -929,7 +993,7 @@ tr:last-child td { border-bottom: 0; }
   $('#cSendAll').onclick = async () => {
     const n = batch.items.filter(i => i.wa_chat_id && ['draft', 'failed', 'cancelled'].includes(i.status)).length;
     if (!ts || !ts.linked) return toast('WhatsApp isn\'t connected. Use the button at the top of the page first.');
-    const mins = Math.ceil(n * 1.05) + 2;
+    const mins = Math.ceil(n * 1.5) + 2;
     if (!confirm(`Send to ${n} ${n > 1 ? 'communities' : 'community'} now?\n\nIt takes about ${mins} minutes. You can close this page meanwhile.`)) return;
     try { const r = await api('/api/sends/start', { method: 'POST', body: JSON.stringify({ batch_id: batch.batch_id }) }); toast(r.queued ? 'Sending starts in 1–2 minutes' : 'Nothing to send'); await loadBatch(batch.batch_id); loadHistory(); loadTracking(); } catch (err) { toast(err.message); }
   };
@@ -982,7 +1046,8 @@ tr:last-child td { border-bottom: 0; }
     if (wasActive && !ph.active) { load(); }
     wasActive = ph.active;
     clearTimeout(pollTimer);
-    pollTimer = setTimeout(loadTracking, ph.active ? 3000 : 60000);
+    renderSendBar();
+    pollTimer = setTimeout(loadTracking, ph.active || (ts.sending && ts.sending.pending) ? 3000 : 60000);
   }
 
   function renderTrack(ph) {
@@ -1045,7 +1110,7 @@ tr:last-child td { border-bottom: 0; }
     const linking = mode === 'login', sending = mode === 'send' || stage === 'sending';
     const order = linking ? ['setup', 'link', 'read', 'done'] : sending ? ['setup', 'send', 'done'] : ['setup', 'read', 'done'];
     const cur = ['queued', 'starting'].includes(stage) ? 'setup' : ['pairing', 'qr'].includes(stage) ? 'link' : stage === 'sending' || (sending && stage === 'connected') ? 'send' : ['connected', 'reading', 'uploading'].includes(stage) ? 'read' : 'done';
-    const label = { setup: ['Starting', 'Preparing the bot (about 1–2 min)'], link: ['Link WhatsApp', 'Enter the code on your phone'], read: ['Reading messages', 'Checking reads, reactions, replies'], send: ['Sending messages', 'One community at a time'], done: [sending ? 'Messages sent' : 'Dashboard updated', sending ? 'See the composer in Link builder' : 'Results appear below'] };
+    const label = { setup: ['Starting', 'Preparing the bot (about 1–2 min)'], link: ['Link WhatsApp', 'Enter the code on your phone'], read: ['Reading messages', 'Checking reads, reactions, replies'], send: ['Sending messages', 'One community at a time'], done: [sending ? 'Messages sent' : 'Dashboard updated', sending ? 'Details in Send message &amp; links' : 'Results appear below'] };
     const ci = order.indexOf(cur);
     const steps = `<div class="steps" style="grid-template-columns:repeat(${order.length},1fr)">${order.map((k, i) => `<div class="step ${i < ci ? 'done' : i === ci ? 'now' : ''}"><b>${i + 1}. ${label[k][0]}</b>${label[k][1]}</div>`).join('')}</div>`;
 

@@ -50,6 +50,7 @@ export default {
         if (path === '/api/bot/status' && request.method === 'POST') return json(await botStatus(await request.json(), env));
         if (path === '/api/bot/sends' && request.method === 'GET') return json(await botSends(env));
         if (path === '/api/bot/sends/continue' && request.method === 'POST') return json(await continueSends(env));
+        if (path === '/api/bot/sends/pause' && request.method === 'POST') return json(await pauseSends(await request.json(), env));
         if (/^\/api\/bot\/sends\/\d+$/.test(path) && request.method === 'POST') return json(await botSendUpdate(Number(path.split('/').pop()), await request.json(), env));
         if (path.startsWith('/api/bot/media/') && request.method === 'GET') return mediaResponse(decodeURIComponent(path.split('/').pop()), env);
         return json({ error: 'not found' }, 404);
@@ -570,7 +571,18 @@ async function trackingState(env) {
   let run = null, run_error = null;
   if (gh) { try { run = await gh.latestRun(); } catch (e) { run_error = e.message; } }
   const lastSync = await env.DB.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').first();
-  return { configured: !!gh, config: { ...config, phone: config.phone ? config.phone.replace(/\d(?=\d{4})/g, '•') : '' },
+  // the message batch being sent now, or the one that finished in the last 15 minutes (top-of-page progress bar)
+  let sending = null;
+  try {
+    sending = await env.DB.prepare(`SELECT batch_id, MIN(campaign) AS campaign, COUNT(*) AS total,
+        SUM(status = 'sent') + SUM(status = 'posted') AS done, SUM(status IN ('queued','sending')) AS pending,
+        SUM(status IN ('failed','unknown')) AS failed, MAX(updated_at) AS updated_at
+      FROM sends WHERE batch_id = (SELECT batch_id FROM sends WHERE status IN ('queued','sending') OR (queued_at IS NOT NULL AND updated_at >= ?)
+        ORDER BY (status IN ('queued','sending')) DESC, updated_at DESC LIMIT 1)
+      AND (queued_at IS NOT NULL OR status IN ('sent','posted','failed','unknown'))
+      GROUP BY batch_id`).bind(now() - 900).first();
+  } catch (e) { /* sends table not created yet */ }
+  return { configured: !!gh, sending: sending || null, config: { ...config, phone: config.phone ? config.phone.replace(/\d(?=\d{4})/g, '•') : '' },
     status, groups, linked: !!linked.linked, run, run_error, last_sync: lastSync || null };
 }
 
@@ -610,11 +622,20 @@ function ownHosts(env) {
 
 async function compose(body, env, origin) {
   const campaign = String(body.campaign || '').trim();
-  const message = String(body.message || '').replace(/\r\n/g, '\n');
+  let message = String(body.message || '').replace(/\r\n/g, '\n');
   const ids = Array.isArray(body.community_ids) ? body.community_ids.map(String) : [];
-  if (!campaign) throw new Error('Campaign name is required');
-  if (!message.trim()) throw new Error('Paste the message first');
-  if (!ids.length) throw new Error('Tick at least one community');
+  // the page link to track: replaced wherever it appears in the message, added at the end if it doesn't,
+  // or on its own when there is no message (links only)
+  const link = cleanUrl(String(body.link || '').trim());
+  if (!campaign) throw new Error('Give it a name (step 1)');
+  if (link && !/^https?:\/\/[^\s]+$/i.test(link)) throw new Error('The link must start with https://');
+  if (!message.trim() && !link) throw new Error('Add the page link or write a message');
+  if (!ids.length) throw new Error('Pick at least one community');
+  if (link) {
+    const inMsg = [...message.matchAll(URL_IN_TEXT)].some(m => cleanUrl(m[0]) === link);
+    if (!message.trim()) message = link;
+    else if (!inMsg) message = message.replace(/\s+$/, '') + '\n\n' + link;
+  }
   let media = null;
   if (body.media_key) {
     media = await env.DB.prepare('SELECT key, name, type, size FROM media WHERE key = ?').bind(String(body.media_key)).first();
@@ -652,7 +673,7 @@ async function compose(body, env, origin) {
 async function listSends(url, env) {
   const batch = url.searchParams.get('batch_id');
   const cols = `s.id, s.batch_id, s.campaign, s.community_id, c.name AS community, s.wa_chat_id, s.body, s.media_key,
-    m.name AS media_name, m.type AS media_type, s.status, s.error, s.created_at, s.queued_at, s.sent_at`;
+    m.name AS media_name, m.type AS media_type, s.status, s.error, s.created_at, s.queued_at, s.sent_at, s.updated_at`;
   if (batch) {
     const { results } = await env.DB.prepare(`SELECT ${cols} FROM sends s LEFT JOIN communities c ON c.id = s.community_id LEFT JOIN media m ON m.key = s.media_key WHERE s.batch_id = ? ORDER BY s.id`).bind(batch).all();
     return { batch_id: batch, items: results };
@@ -690,6 +711,13 @@ async function continueSends(env) {
   if (gh && q && q.n) { await gh.dispatch({ mode: 'send' }); return { ok: true, dispatched: true, left: q.n }; }
   return { ok: true, dispatched: false };
 }
+// the bot stopped after repeated problems: everything still waiting becomes "not sent" with the reason,
+// so nobody's WhatsApp number keeps getting hammered and a person decides what to do
+async function pauseSends(body, env) {
+  const r = await env.DB.prepare("UPDATE sends SET status = 'failed', error = ?, updated_at = ? WHERE status = 'queued'")
+    .bind(String(body.reason || 'Sending paused').slice(0, 300), now()).run();
+  return { ok: true, paused: r.meta ? r.meta.changes : 0 };
+}
 async function cancelSends(body, env) {
   const res = await env.DB.prepare("UPDATE sends SET status = 'cancelled', updated_at = ? WHERE batch_id = ? AND status = 'queued'").bind(now(), String(body.batch_id || '')).run();
   return { ok: true, cancelled: res.meta ? res.meta.changes : 0 };
@@ -711,7 +739,8 @@ async function botSends(env) {
   const { results } = await env.DB.prepare(`SELECT s.id, s.wa_chat_id, s.body, s.media_key, m.name AS media_name, m.type AS media_type, c.name AS community
       FROM sends s LEFT JOIN media m ON m.key = s.media_key LEFT JOIN communities c ON c.id = s.community_id
       WHERE s.status = 'queued' AND s.wa_chat_id IS NOT NULL ORDER BY s.queued_at, s.id LIMIT 200`).all();
-  return { sends: results };
+  const day = await env.DB.prepare("SELECT COUNT(*) AS n FROM sends WHERE status = 'sent' AND sent_at >= ?").bind(t - 86400).first();
+  return { sends: results, sent_last_24h: day ? day.n : 0 };
 }
 async function botSendUpdate(id, body, env) {
   const t = now();
