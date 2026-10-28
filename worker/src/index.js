@@ -66,8 +66,13 @@ export default {
         if (path === '/api/links' && request.method === 'GET') return json(await listLinks(env));
         if (path === '/api/links' && request.method === 'POST') return json(await createLinks(await request.json(), env, url.origin));
         if (path.startsWith('/api/links/') && request.method === 'DELETE') {
-          // soft delete: the link stops working (goes to FALLBACK_URL) but its past clicks stay in the stats
+          // "Hide": only removes the link from the dashboard list. It KEEPS WORKING for anyone who has it,
+          // because it may already be posted in a community. Its clicks stay in the stats.
           await env.DB.prepare('UPDATE links SET deleted_at = ? WHERE code = ?').bind(now(), decodeURIComponent(path.split('/').pop())).run();
+          return json({ ok: true });
+        }
+        if (/^\/api\/links\/[^/]+\/unhide$/.test(path) && request.method === 'POST') {
+          await env.DB.prepare('UPDATE links SET deleted_at = NULL WHERE code = ?').bind(decodeURIComponent(path.split('/')[3])).run();
           return json({ ok: true });
         }
         return json({ error: 'not found' }, 404);
@@ -152,13 +157,20 @@ function logClick(code, request, env, ctx) {
 
 // Short redirect links: tracker/l/CODE -> logs the click, then sends the visitor on
 // Never shows an error to a visitor: unknown/deleted links and database hiccups go to FALLBACK_URL.
+// Smart fallback: a link like funnel-agent-replay-3b names its page. If the database can't be reached,
+// send the visitor to <FALLBACK_URL>/funnel-agent-replay instead of the homepage, so registrations still happen.
+function slugFallback(code, fallback) {
+  const m = /^([a-z0-9][a-z0-9-]*?)-[abcdefghjkmnpqrstuvwxyz23456789]{2,6}$/i.exec(String(code || ''));
+  return m && m[1].toLowerCase() !== 'wa' ? fallback.replace(/\/+$/, '') + '/' + m[1].toLowerCase() : fallback;
+}
 async function handleRedirect(code, request, env, ctx) {
   const fallback = env.FALLBACK_URL || 'https://sb.flexifunnels.com';
   let link = null;
   // case-insensitive, so a link retyped as Funnel-Agent-Access-K7 still works; an exact match wins
   try { link = await env.DB.prepare('SELECT code, destination, deleted_at FROM links WHERE code = ? COLLATE NOCASE ORDER BY (code = ?) DESC LIMIT 1').bind(code, code).first(); }
-  catch (e) { return Response.redirect(fallback, 302); }
-  if (!link || link.deleted_at) return Response.redirect(fallback, 302);
+  catch (e) { return Response.redirect(slugFallback(code, fallback), 302); }
+  if (!link) return Response.redirect(fallback, 302);
+  // a link hidden on the dashboard (deleted_at set) keeps working: it may already be posted in a community
   try { logClick(link.code, request, env, ctx); } catch (e) {}
   // x-tracked tells the relay this was a real tracked link (unknown codes go to the fallback without it)
   return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store', 'x-tracked': '1' } });
@@ -176,7 +188,7 @@ async function handleSiteRequest(request, url, env, ctx) {
   const m = (request.method === 'GET' || request.method === 'HEAD') && SITE_CODE_RE.exec(url.pathname);
   if (m && env.DB) {
     try {
-      const link = await env.DB.prepare('SELECT code, destination FROM links WHERE code = ? COLLATE NOCASE AND deleted_at IS NULL ORDER BY (code = ?) DESC LIMIT 1').bind(m[1], m[1]).first();
+      const link = await env.DB.prepare('SELECT code, destination FROM links WHERE code = ? COLLATE NOCASE ORDER BY (code = ?) DESC LIMIT 1').bind(m[1], m[1]).first();
       if (link) {
         try { logClick(link.code, request, env, ctx); } catch (e) {}
         return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store' } });
@@ -224,11 +236,11 @@ async function addCommunity(body, env) {
 async function listLinks(env) {
   const { results } = await env.DB.prepare(`
     SELECT l.code, l.community_id, c.name AS community, l.campaign, l.destination, l.created_at,
+           l.deleted_at IS NOT NULL AS hidden,
            COUNT(k.id) AS clicks, COUNT(DISTINCT k.visitor_hash) AS unique_clicks
     FROM links l
     LEFT JOIN communities c ON c.id = l.community_id
     LEFT JOIN clicks k ON k.code = l.code AND k.is_bot = 0
-    WHERE l.deleted_at IS NULL
     GROUP BY l.code ORDER BY l.created_at DESC, c.name LIMIT 1000`).all();
   return { links: results, short_base: shortBase(env, null) };
 }

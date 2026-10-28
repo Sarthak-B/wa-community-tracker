@@ -274,7 +274,8 @@ tr:last-child td { border-bottom: 0; }
       </div>
       <div class="hidden"><code id="snippet"></code><button id="copySnippet"></button></div>
       <div class="card">
-        <h2>All tracked links</h2><p class="hint">Click counts exclude WhatsApp link-preview fetches and bots.</p>
+        <div class="row" style="justify-content:space-between"><h2>All tracked links</h2><label class="row sub"><input type="checkbox" id="showHidden"> Show hidden links</label></div>
+        <p class="hint">Click counts exclude WhatsApp link-preview fetches and bots. Links never expire. Hiding a link only removes it from this list: it keeps working for anyone who has it.</p>
         <div class="tablewrap"><table id="linkTable"></table></div>
       </div>
     </section>
@@ -604,22 +605,29 @@ tr:last-child td { border-bottom: 0; }
   function updatePreview() {
     let slug = '';
     try { slug = (new URL($('#dest').value).pathname.split('/').filter(Boolean).pop() || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-'); } catch (e) {}
-    $('#linkPreview').textContent = 'Your links will look like: ' + shortBase.replace(/^https?:\/\//, '') + '/' + (slug ? slug + '-k7' : 'k7m2p') + '  (one ending per community)';
+    $('#linkPreview').textContent = 'Your links will look like: ' + shortBase.replace(/^https?:\/\//, '') + '/' + (slug ? slug + '-k7' : 'wa-k7') + '  (one ending per community)';
   }
   $('#dest').addEventListener('input', updatePreview);
 
   function renderLinkTable() {
-    $('#linkTable').innerHTML = !links.length ? '<tr><td class="empty">No links yet.</td></tr>' :
+    const showHidden = $('#showHidden').checked;
+    const nHidden = links.filter(l => l.hidden).length;
+    $('#showHidden').parentElement.lastChild.textContent = ` Show hidden links${nHidden ? ' (' + nHidden + ')' : ''}`;
+    const rows = links.filter(l => showHidden || !l.hidden);
+    $('#linkTable').innerHTML = !rows.length ? '<tr><td class="empty">No links yet.</td></tr>' :
       '<thead><tr><th>Created</th><th>Campaign</th><th>Community</th><th>Short link</th><th class="num">Clicks</th><th class="num">Unique</th><th></th></tr></thead><tbody>' +
-      links.map(l => { const u = linkUrl(l); return `<tr><td style="white-space:nowrap">${new Date(l.created_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td><td>${esc(l.campaign)}</td><td>${esc(l.community || l.community_id)}</td>
+      rows.map(l => { const u = linkUrl(l); return `<tr${l.hidden ? ' class="muted"' : ''}><td style="white-space:nowrap">${new Date(l.created_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</td><td>${esc(l.campaign)}${l.hidden ? ' <span class="tag">Hidden · still works</span>' : ''}</td><td>${esc(l.community || l.community_id)}</td>
         <td><code title="${esc(u)}">${esc(u.replace(/^https?:\/\//, '').replace(/^www\./, ''))}</code></td><td class="num">${fmt(l.clicks)}</td><td class="num">${fmt(l.unique_clicks)}</td>
-        <td style="white-space:nowrap"><button class="btn small" data-copy="${esc(u)}">Copy</button> <button class="btn small ghost" data-del="${esc(l.code)}" title="Delete link">✕</button></td></tr>`; }).join('') + '</tbody>';
+        <td style="white-space:nowrap"><button class="btn small" data-copy="${esc(u)}">Copy</button> ${l.hidden ? `<button class="btn small ghost" data-unhide="${esc(l.code)}">Unhide</button>` : `<button class="btn small ghost" data-del="${esc(l.code)}" title="Hide from this list (the link keeps working)">Hide</button>`}</td></tr>`; }).join('') + '</tbody>';
   }
   $('#linkTable').addEventListener('click', async e => {
+    const u = e.target.closest('[data-unhide]');
+    if (u) { try { await api('/api/links/' + encodeURIComponent(u.dataset.unhide) + '/unhide', { method: 'POST' }); load(); } catch (err) { toast(err.message); } return; }
     const b = e.target.closest('[data-del]'); if (!b) return;
-    if (!confirm('Remove this link from the list? Anyone who still clicks it will be sent to your main website instead. Clicks it already got stay in the stats.')) return;
-    try { await api('/api/links/' + b.dataset.del, { method: 'DELETE' }); load(); } catch (err) { toast(err.message); }
+    if (!confirm('Hide this link from the list?\n\nIt KEEPS WORKING: anyone who clicks it still lands on the page and is still counted. You can bring it back with "Show hidden links".')) return;
+    try { await api('/api/links/' + encodeURIComponent(b.dataset.del), { method: 'DELETE' }); load(); toast('Hidden. The link still works.'); } catch (err) { toast(err.message); }
   });
+  $('#showHidden').onchange = renderLinkTable;
 
   // ================= ONE-CLICK TRACKING =================
   const ACTIVE = new Set(['queued', 'starting', 'pairing', 'qr', 'connected', 'reading', 'uploading']);

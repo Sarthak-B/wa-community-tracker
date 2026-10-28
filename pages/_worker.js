@@ -9,9 +9,17 @@
 const TRACKER = 'https://sb.flexicommunities.workers.dev'; // the tracker's link worker
 const FALLBACK = 'https://sb.flexifunnels.com';             // where everything else goes
 const TAG_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';
-// tracked links always look like /<page>-<2-6 tag characters>
-const LINK_RE = new RegExp(`^/([a-z0-9][a-z0-9-]{0,60}-[${TAG_CHARS}]{2,6})/?$`, 'i');
+// tracked links look like /<page>-<2-6 tag characters>, or an older random code like /sRbWJc
+const LINK_RE = /^\/([A-Za-z0-9][A-Za-z0-9-]{2,63})\/?$/;
+const NOT_LINKS = new Set(['dashboard', 'health', 'api']); // tracker pages that must never be reachable from here
 
+// Smart fallback: funnel-agent-replay-3b names its page, so if the tracker can't be reached the visitor still
+// lands on https://sb.flexifunnels.com/funnel-agent-replay (the registration page), not the homepage.
+const pageFor = (code) => {
+  const m = new RegExp(`^([a-z0-9][a-z0-9-]*?)-[${TAG_CHARS}]{2,6}$`, 'i').exec(code);
+  // only links made as <page>-<tag> name their page; older random codes go to the homepage
+  return m && m[1].toLowerCase() !== 'wa' ? FALLBACK + '/' + m[1].toLowerCase() : FALLBACK;
+};
 const redirect = (location) => new Response(null, { status: 302, headers: { location, 'cache-control': 'no-store' } });
 
 export default {
@@ -20,7 +28,7 @@ export default {
     if (url.pathname === '/robots.txt') return new Response('User-agent: *\nDisallow: /\n');
     if (url.pathname === '/favicon.ico') return new Response(null, { status: 204 });
     const m = (request.method === 'GET' || request.method === 'HEAD') && LINK_RE.exec(url.pathname);
-    if (!m) return redirect(FALLBACK);
+    if (!m || NOT_LINKS.has(m[1].toLowerCase())) return redirect(FALLBACK);
     try {
       const res = await fetch(TRACKER + '/' + m[1], {
         method: request.method,
@@ -31,11 +39,11 @@ export default {
           'x-relay-ip': request.headers.get('cf-connecting-ip') || '',
           'x-relay-country': (request.cf && request.cf.country) || '',
         },
-        signal: AbortSignal.timeout(4000),
+        signal: AbortSignal.timeout(3000),
       });
       const location = res.headers.get('location');
       if (location && res.status >= 300 && res.status < 400) return redirect(location);
-    } catch (e) { /* tracker unreachable */ }
-    return redirect(FALLBACK);
+    } catch (e) { /* tracker slow or unreachable */ }
+    return redirect(pageFor(m[1])); // the page the link was made for
   },
 };

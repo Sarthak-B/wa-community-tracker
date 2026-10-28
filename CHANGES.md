@@ -36,3 +36,8 @@
 - No access to flexifunnels.com's Cloudflare account, so new links use a free Pages address in the tracker's own account, e.g. `https://flexisb.pages.dev/funnel-agent-replay-3b`. `pages/_worker.js` hands tracked links to the `sb` worker with the visitor's IP and country (`RELAY_KEY`, same secret on both); everything else goes to https://sb.flexifunnels.com. The relay/ folder from 7b was removed.
 - `SHORT_BASE` in wrangler.toml is the Pages address (filled in during setup). If it still holds the PAGES_NAME placeholder, the dashboard keeps making sb.flexicommunities.workers.dev links instead of broken ones.
 - Kept from update 7: community main (parent) groups are never tracked and hidden from Choose groups / Link builder; links are always `<page>-<tag>`; a `?…` after a link no longer stops it being counted.
+
+# Update 9 (2026-10-28): links that keep working
+- **Hiding never breaks a link.** The link list's ✕ is now **Hide**: the link leaves the list but keeps redirecting and counting clicks, since it may already be posted. "Show hidden links" lists them again with **Unhide**.
+- **Smart fallback.** If the tracker or its database can't be reached, a link like `/funnel-agent-replay-3b` sends the visitor to `https://sb.flexifunnels.com/funnel-agent-replay` (the page it was made for) instead of the homepage. Only that click goes uncounted. Applies in both the Pages short-link worker and the tracker.
+- Old random-code links (e.g. `sRbWJc`) also work on the pages.dev address; `/dashboard`, `/health` and `/api` can never be reached through it.
