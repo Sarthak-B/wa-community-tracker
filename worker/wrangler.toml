@@ -6,7 +6,8 @@ compatibility_date = "2025-06-01"
 rules = [{ type = "Text", globs = ["**/*.html"], fallthrough = true }]
 
 [vars]
-SHORT_BASE = "https://sb.flexicommunities.workers.dev"   # where short links live
+SHORT_BASE = "https://flexisb.pages.dev"   # where new short links live: the free Pages address in pages/ (set during setup)
+# Links made earlier on https://sb.flexicommunities.workers.dev keep working.
 FALLBACK_URL = "https://sb.flexifunnels.com"               # where unknown/removed links go
 TZ_OFFSET_MINUTES = "330"   # IST, used for "per day" charts
 # Branch the dashboard's Start button runs the workflow on (default main)

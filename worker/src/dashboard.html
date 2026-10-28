@@ -387,6 +387,8 @@ tr:last-child td { border-bottom: 0; }
       c.early = (c.messages || 0) < 2 && (c.links || 0) < 2;
       // shown when it had activity in the period, or is ticked for tracking (so a brand-new community is visible straight away)
       c.active = c.messages > 0 || c.clicks > 0 || c.links > 0 || c.tracked;
+      // a community's main (parent) group duplicates its announcement group: only shown if people actually clicked its links
+      if (c.parent) c.active = c.clicks > 0;
     }
     const scored = cs.filter(c => c.active && !c.early);
     const max = k => Math.max(0, ...scored.map(c => c[k] || 0));
@@ -452,7 +454,7 @@ tr:last-child td { border-bottom: 0; }
         const early = rankBy === 'score' && c.early;
         const sub = [bornLabel(c), c.last_post_at ? 'last post ' + new Date(c.last_post_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : 'no posts in this period'].filter(Boolean).join(' · ');
         return `<tr><td><span class="rank ${top ? 'top' : low ? 'low' : ''}">${r ?? '–'}</span></td>
-          <td><b>${esc(c.name)}</b>${c.is_new ? `<span class="tag new">New · ${ageLabel(c)}</span>` : ''}${r === 1 && n > 1 ? '<span class="tag top">Best</span>' : ''}${low ? '<span class="tag low">Needs attention</span>' : ''}${early ? '<span class="tag">Too early to rank</span>' : ''}<div class="muted" style="font-size:12px">${esc(sub)}</div>${!c.connected ? '<div class="muted" style="font-size:12px">Not seen by the WhatsApp bot yet</div>' : ''}</td>
+          <td><b>${esc(c.name)}</b>${c.is_new ? `<span class="tag new">New · ${ageLabel(c)}</span>` : ''}${r === 1 && n > 1 ? '<span class="tag top">Best</span>' : ''}${low ? '<span class="tag low">Needs attention</span>' : ''}${early ? '<span class="tag">Too early to rank</span>' : ''}<div class="muted" style="font-size:12px">${esc(sub)}</div>${!c.connected ? '<div class="muted" style="font-size:12px">Not seen by the WhatsApp bot yet</div>' : ''}${c.parent ? '<div class="muted" style="font-size:12px">Community main group (admins only). Use the other copy of this community for new links</div>' : ''}</td>
           <td class="num">${fmt(c.members)}</td><td class="num">${fmt(c.messages)}</td><td class="num"${c.delivered ? '' : ' title="No posts from the linked number in this period, so WhatsApp gives no read info"'}>${c.delivered ? pct(c.read_rate) : '–'}</td>
           <td class="num">${fmt(c.replies)}</td><td class="num">${fmt(c.reactions)}</td><td class="num">${fmt(c.unique_clicks)}</td><td class="num">${c.members ? dec(c.click_rate) : '–'}</td>
           <td><div class="scorebar"><div class="track"><div class="fill" style="width:${Math.max(2, v / maxV * 100)}%"></div></div><b>${metricFmt(rankBy, c[rankBy])}</b></div></td></tr>`;
@@ -759,7 +761,8 @@ tr:last-child td { border-bottom: 0; }
     renderGroups();
     $('#groupsPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-  function shownGroups() { const q = $('#groupSearch').value.toLowerCase(); return ts.groups.list.filter(g => !q || g.name.toLowerCase().includes(q)); }
+  // community main (parent) groups are hidden: nobody posts there and the bot never reads them
+  function shownGroups() { const q = $('#groupSearch').value.toLowerCase(); return ts.groups.list.filter(g => !g.parent && (!q || g.name.toLowerCase().includes(q))); }
   function renderGroups() {
     const list = shownGroups();
     $('#groupList').innerHTML = !ts.groups.list.length ? '<div class="muted">Groups appear here after the first sync.</div>' :
@@ -769,7 +772,7 @@ tr:last-child td { border-bottom: 0; }
   function renderGroupCount() {
     $('#groupCount').textContent = autoMode
       ? `Automatic: ${groupsSel.size} community groups now, new communities are added by themselves`
-      : `${groupsSel.size} of ${ts.groups.list.length} groups ticked` + (groupsSel.size ? '' : ' - nothing will be tracked');
+      : `${groupsSel.size} of ${ts.groups.list.filter(g => !g.parent).length} groups ticked` + (groupsSel.size ? '' : ' - nothing will be tracked');
   }
   $('#groupList').addEventListener('change', e => { if (e.target.type === 'checkbox') { autoMode = false; e.target.checked ? groupsSel.add(e.target.value) : groupsSel.delete(e.target.value); renderGroupCount(); } });
   $('#groupSearch').oninput = renderGroups;

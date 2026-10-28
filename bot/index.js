@@ -218,14 +218,18 @@ async function collect() {
 
   const list = groups.map(g => {
     const md = g.groupMetadata || {};
-    const auto = GROUP_FILTER ? GROUP_FILTER.test(g.name || '') : isCommunityAnnouncementGroup(g);
-    const tracked = picked ? picked.has(g.id._serialized) : auto;
+    // A community's main ("parent") group only holds the admins and nobody posts in it; members get posts in its
+    // announcement group, which carries the same name. Tracking both made every community appear twice, so a
+    // parent group is never tracked, even if it was ticked before.
+    const parent = !!md.isParentGroup;
+    const auto = !parent && (GROUP_FILTER ? GROUP_FILTER.test(g.name || '') : isCommunityAnnouncementGroup(g));
+    const tracked = !parent && (picked ? picked.has(g.id._serialized) : auto);
     const members = (md.participants || []).length || Number(md.size) || 0;
-    return { chat: g, id: g.id._serialized, name: g.name || '(no name)', members, auto, tracked, created: createdAt(md) };
+    return { chat: g, id: g.id._serialized, name: g.name || '(no name)', members, auto, tracked, parent, created: createdAt(md) };
   }).sort((a, b) => (b.tracked - a.tracked) || (b.created - a.created) || (b.members - a.members));
 
   log(`Found ${groups.length} groups, newest first. (tracked = *)`);
-  for (const g of list) log(`  ${g.tracked ? '*' : ' '} ${g.name}  [members=${g.members}, made ${g.created ? new Date(g.created * 1000).toISOString().slice(0, 10) : '?'}]`);
+  for (const g of list) log(`  ${g.tracked ? '*' : ' '} ${g.name}  [members=${g.members}, made ${g.created ? new Date(g.created * 1000).toISOString().slice(0, 10) : '?'}${g.parent ? ', community main group - skipped' : ''}]`);
   // Newest community first, then further back. Safety net: a group not read for STALE_HOURS
   // (or never read) jumps the queue, so old communities are never skipped forever when a run runs out of time.
   const lastRead = config.last_read || {};
@@ -237,7 +241,7 @@ async function collect() {
   await status('reading', {
     message: tracked.length ? `Reading ${tracked.length} groups` : 'No groups selected. Choose groups on the dashboard.',
     progress: { done: 0, total: tracked.length },
-    groups: list.map(({ id, name, members, auto, tracked, created }) => ({ id, name, members, auto, tracked, created })),
+    groups: list.map(({ id, name, members, auto, tracked, parent, created }) => ({ id, name, members, auto, tracked, parent, created })),
   });
 
   const since = Math.floor(Date.now() / 1000) - Number(config.lookback_days || 14) * 86400;

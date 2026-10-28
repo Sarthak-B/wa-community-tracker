@@ -17,6 +17,9 @@ const now = () => Math.floor(Date.now() / 1000);
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    // Running on your real site's address (e.g. sb.flexifunnels.com, see SITE_HOSTS): only tracked links are
+    // handled here, everything else goes straight through to FlexiFunnels untouched.
+    if (siteHosts(env).has(url.hostname.toLowerCase())) return handleSiteRequest(request, url, env, ctx);
     const path = url.pathname.replace(/\/+$/, '') || '/';
     try {
       if (env.DB && path !== '/' && path !== '/dashboard' && path !== '/t.js' && path !== '/health') await ensureSchema(env);
@@ -81,9 +84,11 @@ function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
 }
 function authorized(request, secret) {
-  if (!secret) return false;
   const h = request.headers.get('authorization') || '';
-  const token = h.startsWith('Bearer ') ? h.slice(7) : '';
+  return authorizedValue(h.startsWith('Bearer ') ? h.slice(7) : '', secret);
+}
+function authorizedValue(token, secret) {
+  if (!secret) return false;
   if (token.length !== secret.length) return false;
   let diff = 0;
   for (let i = 0; i < token.length; i++) diff |= token.charCodeAt(i) ^ secret.charCodeAt(i);
@@ -131,12 +136,16 @@ async function uniqueSlug(env, base) {
 // ---------- short links ----------
 function logClick(code, request, env, ctx) {
   const ua = request.headers.get('user-agent') || '';
-  const ip = request.headers.get('cf-connecting-ip') || '';
+  // Clicks relayed from sb.flexifunnels.com (relay/ worker in the domain's Cloudflare account) carry the visitor's
+  // real IP and country; they are only trusted when the shared RELAY_KEY matches.
+  const relayed = env.RELAY_KEY && authorizedValue(request.headers.get('x-relay-key') || '', env.RELAY_KEY);
+  const ip = (relayed && request.headers.get('x-relay-ip')) || request.headers.get('cf-connecting-ip') || '';
+  const country = (relayed && request.headers.get('x-relay-country')) || (request.cf && request.cf.country) || null;
   const isBot = !ua || BOT_UA.test(ua) || request.method === 'HEAD';
   ctx.waitUntil((async () => {
     const visitor = await sha256(`${env.HASH_SALT || 'salt'}|${ip}|${ua}`);
     await env.DB.prepare('INSERT INTO clicks (code, clicked_at, visitor_hash, country, device, is_bot) VALUES (?,?,?,?,?,?)')
-      .bind(code, now(), visitor, (request.cf && request.cf.country) || null, /Mobi|Android|iPhone|iPad/i.test(ua) ? 'mobile' : 'desktop', isBot ? 1 : 0)
+      .bind(code, now(), visitor, country, /Mobi|Android|iPhone|iPad/i.test(ua) ? 'mobile' : 'desktop', isBot ? 1 : 0)
       .run();
   })());
 }
@@ -151,7 +160,30 @@ async function handleRedirect(code, request, env, ctx) {
   catch (e) { return Response.redirect(fallback, 302); }
   if (!link || link.deleted_at) return Response.redirect(fallback, 302);
   try { logClick(link.code, request, env, ctx); } catch (e) {}
-  return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store' } });
+  // x-tracked tells the relay this was a real tracked link (unknown codes go to the fallback without it)
+  return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store', 'x-tracked': '1' } });
+}
+
+// ---------- links on your own site's address (SITE_HOSTS) ----------
+// A tracked link always ends in "-" + a 2-6 character tag made only of these letters (no l, i, o, 0, 1),
+// e.g. /funnel-agent-replay-3b. Real page addresses almost never do, so normal page views skip the database.
+const TAG_CHARS = 'abcdefghjkmnpqrstuvwxyz23456789';
+const SITE_CODE_RE = new RegExp(`^/([a-z0-9][a-z0-9-]{0,60}-[${TAG_CHARS}]{2,6})/?$`, 'i');
+function siteHosts(env) {
+  return new Set(String(env.SITE_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
+}
+async function handleSiteRequest(request, url, env, ctx) {
+  const m = (request.method === 'GET' || request.method === 'HEAD') && SITE_CODE_RE.exec(url.pathname);
+  if (m && env.DB) {
+    try {
+      const link = await env.DB.prepare('SELECT code, destination FROM links WHERE code = ? COLLATE NOCASE AND deleted_at IS NULL ORDER BY (code = ?) DESC LIMIT 1').bind(m[1], m[1]).first();
+      if (link) {
+        try { logClick(link.code, request, env, ctx); } catch (e) {}
+        return new Response(null, { status: 302, headers: { location: link.destination, 'cache-control': 'no-store' } });
+      }
+    } catch (e) { /* database hiccup: fall through to the real page */ }
+  }
+  return fetch(request); // the real FlexiFunnels page, exactly as before
 }
 
 // Direct links: yourpage.com/...?wa=CODE. The tracking snippet on the page calls /h?c=CODE.
@@ -171,8 +203,13 @@ function trackingScript(origin) {
 
 // ---------- communities & links ----------
 async function listCommunities(env) {
-  const { results } = await env.DB.prepare('SELECT id, name, wa_chat_id, member_count, wa_created_at, created_at, updated_at FROM communities').all();
-  return { communities: results.map(c => ({ ...c, ...communityBorn(c) })).sort(newestFirst) };
+  const [{ results }, groups] = await Promise.all([
+    env.DB.prepare('SELECT id, name, wa_chat_id, member_count, wa_created_at, created_at, updated_at FROM communities').all(),
+    kvGet(env, 'groups', { list: [] }),
+  ]);
+  // a community's main (parent) group only holds admins: never offer it in the Link builder
+  const parents = new Set((groups.list || []).filter(g => g.parent).map(g => g.id));
+  return { communities: results.filter(c => !parents.has(c.wa_chat_id)).map(c => ({ ...c, ...communityBorn(c) })).sort(newestFirst) };
 }
 async function addCommunity(body, env) {
   const name = String(body.name || '').trim();
@@ -195,7 +232,11 @@ async function listLinks(env) {
     GROUP BY l.code ORDER BY l.created_at DESC, c.name LIMIT 1000`).all();
   return { links: results, short_base: shortBase(env, null) };
 }
-function shortBase(env, origin) { return (env.SHORT_BASE || origin || '').replace(/\/+$/, ''); }
+function shortBase(env, origin) {
+  // a SHORT_BASE still holding the setup placeholder would make broken links: use the link worker instead
+  const base = env.SHORT_BASE && !/PAGES_NAME/.test(env.SHORT_BASE) ? env.SHORT_BASE : 'https://sb.flexicommunities.workers.dev';
+  return (base || origin || '').replace(/\/+$/, '');
+}
 async function createLinks(body, env, origin) {
   const campaign = String(body.campaign || '').trim();
   let destination = String(body.destination || '').trim();
@@ -210,11 +251,12 @@ async function createLinks(body, env, origin) {
   // short link = last part of the page address + a 2-3 character tag per community
   const pageSlug = (new URL(destination).pathname.split('/').filter(Boolean).pop() || '').toLowerCase()
     .replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-  const tagChars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const tagChars = TAG_CHARS;
   const newCode = () => {
     for (let len = 2; len <= 6; len++) for (let tries = 0; tries < 30; tries++) {
       const tag = Array.from(crypto.getRandomValues(new Uint8Array(len)), b => tagChars[b % tagChars.length]).join('');
-      const c = pageSlug ? `${pageSlug}-${tag}` : tag + randomCode(3).toLowerCase();
+      // always "<page>-<tag>" (or "wa-<tag>" for a page with no path), so the link also works on your own site's address
+      const c = `${pageSlug || 'wa'}-${tag}`;
       if (!taken.has(c) && !RESERVED.has(c)) { taken.add(c); return c; }
     }
     return randomCode(8);
@@ -340,7 +382,7 @@ async function stats(url, env) {
     const born = communityBorn({ ...c, wa_created_at: c.wa_created_at || validCreated(g && g.created) });
     return [c.id, {
       id: c.id, name: c.name, members: c.member_count || 0, connected: !!c.wa_chat_id,
-      tracked: !!(g && g.tracked), ...born,
+      tracked: !!(g && g.tracked), parent: !!(g && g.parent), ...born,
       messages: 0, delivered: 0, reads: 0, reactions: 0, replies: 0, clicks: 0, unique_clicks: 0, links: 0,
       link_posts: 0, read_posts: 0, last_post_at: null,
     }];
@@ -444,7 +486,7 @@ async function botStatus(body, env) {
   if (status.stage === 'connected' || status.stage === 'done') await kvSet(env, 'linked', { linked: true, at: now() });
   if (status.stage === 'logged_out') await kvSet(env, 'linked', { linked: false, at: now() });
   if (Array.isArray(body.groups)) {
-    const list = body.groups.slice(0, 500).map(g => ({ id: String(g.id), name: String(g.name || ''), members: Number(g.members) || 0, auto: !!g.auto, tracked: !!g.tracked, created: validCreated(g.created) }))
+    const list = body.groups.slice(0, 500).map(g => ({ id: String(g.id), name: String(g.name || ''), members: Number(g.members) || 0, auto: !!g.auto, tracked: !!g.tracked, parent: !!g.parent, created: validCreated(g.created) }))
       .sort((a, b) => (b.created || 0) - (a.created || 0)); // newest first in Choose groups
     await kvSet(env, 'groups', { at: now(), list });
     // backfill creation dates for every community already in the database, in one go (not only the groups read this run)
