@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS communities (
   name          TEXT NOT NULL,
   wa_chat_id    TEXT UNIQUE,               -- WhatsApp announcement-group id (filled by the bot)
   member_count  INTEGER DEFAULT 0,
-  created_at    INTEGER NOT NULL,
+  wa_created_at INTEGER,                   -- when the community was made on WhatsApp (sent by the bot); orders the dashboard newest first
+  created_at    INTEGER NOT NULL,          -- when the tracker first saw it
   updated_at    INTEGER NOT NULL
 );
 

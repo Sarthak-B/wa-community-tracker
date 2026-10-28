@@ -89,6 +89,8 @@ tr:last-child td { border-bottom: 0; }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; font-weight: 500; margin-left: 6px; white-space: nowrap; }
 .tag.top { background: var(--good-bg); color: var(--good); }
 .tag.low { background: var(--bad-bg); color: var(--bad); }
+.tag.new { background: var(--seq-1); color: var(--text); }
+.tag:not(.top):not(.low):not(.new) { background: var(--grid); color: var(--text-2); }
 .scorebar { display: flex; align-items: center; gap: 8px; min-width: 130px; }
 .scorebar .track { flex: 1; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
 .scorebar .fill { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
@@ -198,7 +200,13 @@ tr:last-child td { border-bottom: 0; }
       <div class="kpis" id="kpis"></div>
       <div class="card">
         <div class="row" style="justify-content:space-between;margin-bottom:8px">
-          <div><h2>Which community performs best</h2><p class="hint" style="margin:0">Ranked from best to weakest for the selected period.</p></div>
+          <div><h2>Which community performs best</h2><p class="hint" style="margin:0" id="leaderHint">Newest community at the top. The # column is each community's rank for the selected period.</p></div>
+          <label class="row sub">Show
+            <select id="orderBy">
+              <option value="newest">Newest community first</option>
+              <option value="rank">Best to weakest</option>
+            </select>
+          </label>
           <label class="row sub">Rank by
             <select id="rankBy">
               <option value="score">Overall score</option>
@@ -211,10 +219,10 @@ tr:last-child td { border-bottom: 0; }
           </label>
         </div>
         <div class="tablewrap"><table id="leaderTable"></table></div>
-        <p class="legend-note">Overall score = 60% unique clicks per 100 members + 25% replies &amp; reactions per 100 members + 15% read rate, each compared to the best community (best = 100). Per-member rates keep big and small communities comparable. Read rate only exists for posts sent from the linked number; a community without such posts is scored on clicks and engagement alone.</p>
+        <p class="legend-note">Overall score = 60% unique clicks per 100 members per tracked link + 25% replies &amp; reactions per 100 members per post + 15% read rate, each compared to the best community (best = 100). Per-member and per-post rates keep big and small, old and new communities comparable: a community started this week is not punished for having had fewer posts. A community with fewer than 2 posts and 2 tracked links in the period is shown as "Too early to rank" instead of getting a score. Read rate only exists for posts sent from the linked number; a community without such posts is scored on clicks and engagement alone.</p>
       </div>
       <div class="grid2">
-        <div class="card"><h2 id="barTitle">Overall score by community</h2><p class="hint">Sorted best to weakest</p><div class="chart-box" id="barBox"><canvas id="barChart"></canvas></div></div>
+        <div class="card"><h2 id="barTitle">Overall score by community</h2><p class="hint" id="barHint">Newest community at the top</p><div class="chart-box" id="barBox"><canvas id="barChart"></canvas></div></div>
         <div class="card"><h2>Link clicks per day</h2><p class="hint">Top 5 communities by clicks, the rest grouped as Others</p><div class="chart-box"><canvas id="trendChart"></canvas></div></div>
       </div>
     </section>
@@ -285,6 +293,7 @@ tr:last-child td { border-bottom: 0; }
   let days = Number(store.get('wct_days') || 30);
   let data = null, links = [], communities = [];
   let rankBy = 'score', campMetric = 'unique_clicks';
+  let orderBy = store.get('wct_order') === 'rank' ? 'rank' : 'newest'; // newest community first by default
   let sortMsg = { key: 'sent_at', dir: -1 };
   let charts = {};
 
@@ -326,7 +335,9 @@ tr:last-child td { border-bottom: 0; }
   };
   $('#period').onclick = e => { const b = e.target.closest('button'); if (!b) return; days = Number(b.dataset.days); store.set('wct_days', days); load(); };
   $('#refresh').onclick = () => load();
-  $('#rankBy').onchange = e => { rankBy = e.target.value; renderLeader(); renderCharts(); };
+  $('#rankBy').onchange = e => { rankBy = e.target.value; if (data) computeScores(); renderLeader(); renderCharts(); };
+  $('#orderBy').value = orderBy;
+  $('#orderBy').onchange = e => { orderBy = e.target.value; store.set('wct_order', orderBy); renderLeader(); renderCharts(); };
   $('#campMetric').onclick = e => { const b = e.target.closest('button'); if (!b) return; campMetric = b.dataset.m; document.querySelectorAll('#campMetric button').forEach(x => x.classList.toggle('on', x === b)); renderCampaigns(); };
   $('#msgSearch').oninput = renderMessages;
   $('#msgComm').onchange = renderMessages;
@@ -354,25 +365,49 @@ tr:last-child td { border-bottom: 0; }
   // Overall score weights. Read rate counts for less because WhatsApp only gives read info for
   // posts sent from the linked number, and undercounts in big groups.
   const WEIGHTS = { clicks: 0.60, reads: 0.15, engagement: 0.25 };
+  // newest first; a community with a real date (WhatsApp or name) goes before one only known by "first seen"
+  const dated = c => !!c.born && c.born_source !== 'first_seen';
+  const newer = (a, b) => (dated(b) - dated(a)) || ((b.born || 0) - (a.born || 0));
+  const NEW_DAYS = 7; // a community made in the last 7 days gets a "New" tag
   function computeScores() {
     const cs = data.communities;
+    const nowS = Date.now() / 1000;
     for (const c of cs) {
       // null = no posts from the linked number in this period, so there is no read info at all
       c.read_rate = c.delivered ? c.reads / c.delivered : null;
       c.click_rate = c.members ? c.unique_clicks / c.members * 100 : 0;
       c.engagement = c.members ? (c.replies + c.reactions) / c.members * 100 : 0;
+      // per-post versions used for the score, so a new community with 2 posts is compared fairly with an old one with 40
+      const linkCount = Math.max(c.links || 0, c.link_posts || 0, c.unique_clicks ? 1 : 0);
+      c.click_rate_post = linkCount ? c.click_rate / linkCount : 0;
+      c.engagement_post = c.messages ? c.engagement / c.messages : 0;
+      // "first seen" is only when the tracker noticed it, not its real age, so it gets no age and no New tag
+      c.age_days = c.born && c.born_source !== 'first_seen' ? Math.max(0, Math.floor((nowS - c.born) / 86400)) : null;
+      c.is_new = c.age_days != null && c.age_days < NEW_DAYS;
+      c.early = (c.messages || 0) < 2 && (c.links || 0) < 2;
+      // shown when it had activity in the period, or is ticked for tracking (so a brand-new community is visible straight away)
+      c.active = c.messages > 0 || c.clicks > 0 || c.links > 0 || c.tracked;
     }
-    const max = k => Math.max(0, ...cs.map(c => c[k] || 0));
-    const mc = max('click_rate'), mr = max('read_rate'), me = max('engagement');
+    const scored = cs.filter(c => c.active && !c.early);
+    const max = k => Math.max(0, ...scored.map(c => c[k] || 0));
+    const mc = max('click_rate_post'), mr = max('read_rate'), me = max('engagement_post');
     for (const c of cs) {
+      if (!c.active || c.early) { c.score = null; continue; }
       // a community without read info is scored on clicks + engagement only, instead of getting 0 for reads
       const hasReads = c.read_rate != null && mr > 0;
       const total = WEIGHTS.clicks + WEIGHTS.engagement + (hasReads ? WEIGHTS.reads : 0);
-      const raw = WEIGHTS.clicks * (mc ? c.click_rate / mc : 0) + WEIGHTS.engagement * (me ? c.engagement / me : 0) + (hasReads ? WEIGHTS.reads * c.read_rate / mr : 0);
+      const raw = WEIGHTS.clicks * (mc ? c.click_rate_post / mc : 0) + WEIGHTS.engagement * (me ? c.engagement_post / me : 0) + (hasReads ? WEIGHTS.reads * c.read_rate / mr : 0);
       c.score = Math.round(100 * raw / total);
-      c.active = c.messages > 0 || c.clicks > 0;
     }
+    // performance rank (1 = best) for the chosen metric; "too early" communities get no rank
+    const rankable = cs.filter(c => c.active && c[rankBy] != null && !(rankBy === 'score' && c.early));
+    rankable.sort((a, b) => (mval(b, rankBy) - mval(a, rankBy)) || (b.unique_clicks - a.unique_clicks));
+    cs.forEach(c => { c.rank = null; });
+    rankable.forEach((c, i) => { c.rank = i + 1; });
+    data.rank_count = rankable.length;
   }
+  const ageLabel = c => c.age_days == null ? '' : c.age_days === 0 ? 'today' : c.age_days === 1 ? '1 day' : c.age_days + ' days';
+  const bornLabel = c => !c.born ? '' : (c.born_source === 'first_seen' ? 'First seen ' : 'Started ') + new Date(c.born * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 
   function renderSync() {
     $('#syncInfo').textContent = 'Messages, reads, replies and link clicks across your WhatsApp communities';
@@ -396,19 +431,28 @@ tr:last-child td { border-bottom: 0; }
   const metricFmt = (k, v) => v == null ? '–' : k === 'read_rate' ? pct(v) : (k === 'click_rate' || k === 'engagement') ? dec(v) : fmt(v);
   // communities without read info sort last when ranking by read rate
   const mval = (c, k) => c[k] == null ? -1 : c[k];
-  const ranked = () => [...data.communities].filter(c => c.active).sort((a, b) => (mval(b, rankBy) - mval(a, rankBy)) || (b.unique_clicks - a.unique_clicks));
+  // newest community first (default), or best to weakest; "too early" communities go after ranked ones in rank order
+  const ranked = () => {
+    const rows = [...data.communities].filter(c => c.active);
+    if (orderBy === 'rank') return rows.sort((a, b) => ((a.rank ?? 1e9) - (b.rank ?? 1e9)) || newer(a, b));
+    return rows.sort((a, b) => newer(a, b) || ((a.rank ?? 1e9) - (b.rank ?? 1e9)));
+  };
 
   function renderLeader() {
     const rows = ranked();
+    $('#leaderHint').textContent = orderBy === 'rank' ? 'Ranked from best to weakest for the selected period.' : 'Newest community at the top. The # column is each community\'s rank for the selected period.';
     if (!rows.length) { $('#leaderTable').innerHTML = '<tr><td class="empty">No data yet. Create tracked links in the Link builder, and run the WhatsApp sync.</td></tr>'; return; }
-    const n = rows.length;
+    const n = data.rank_count || 0;
     const maxV = Math.max(...rows.map(r => r[rankBy] || 0)) || 1;
     $('#leaderTable').innerHTML = `<thead><tr><th>#</th><th>Community</th><th class="num">Members</th><th class="num">Messages</th><th class="num">Read rate</th><th class="num">Replies</th><th class="num">Reactions</th><th class="num">Unique clicks</th><th class="num">Clicks / 100 members</th><th>${esc(metricLabel[rankBy])}</th></tr></thead><tbody>` +
-      rows.map((c, i) => {
-        const top = i < 3 && n > 3, low = i >= n - 2 && n > 4;
+      rows.map(c => {
+        const r = c.rank;
+        const top = r != null && r <= 3 && n > 3, low = r != null && r > n - 2 && n > 4;
         const v = c[rankBy] || 0;
-        return `<tr><td><span class="rank ${top ? 'top' : low ? 'low' : ''}">${i + 1}</span></td>
-          <td><b>${esc(c.name)}</b>${i === 0 && n > 1 ? '<span class="tag top">Best</span>' : ''}${low ? '<span class="tag low">Needs attention</span>' : ''}${!c.connected ? '<div class="muted" style="font-size:12px">Not seen by the WhatsApp bot yet</div>' : ''}</td>
+        const early = rankBy === 'score' && c.early;
+        const sub = [bornLabel(c), c.last_post_at ? 'last post ' + new Date(c.last_post_at * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : 'no posts in this period'].filter(Boolean).join(' · ');
+        return `<tr><td><span class="rank ${top ? 'top' : low ? 'low' : ''}">${r ?? '–'}</span></td>
+          <td><b>${esc(c.name)}</b>${c.is_new ? `<span class="tag new">New · ${ageLabel(c)}</span>` : ''}${r === 1 && n > 1 ? '<span class="tag top">Best</span>' : ''}${low ? '<span class="tag low">Needs attention</span>' : ''}${early ? '<span class="tag">Too early to rank</span>' : ''}<div class="muted" style="font-size:12px">${esc(sub)}</div>${!c.connected ? '<div class="muted" style="font-size:12px">Not seen by the WhatsApp bot yet</div>' : ''}</td>
           <td class="num">${fmt(c.members)}</td><td class="num">${fmt(c.messages)}</td><td class="num"${c.delivered ? '' : ' title="No posts from the linked number in this period, so WhatsApp gives no read info"'}>${c.delivered ? pct(c.read_rate) : '–'}</td>
           <td class="num">${fmt(c.replies)}</td><td class="num">${fmt(c.reactions)}</td><td class="num">${fmt(c.unique_clicks)}</td><td class="num">${c.members ? dec(c.click_rate) : '–'}</td>
           <td><div class="scorebar"><div class="track"><div class="fill" style="width:${Math.max(2, v / maxV * 100)}%"></div></div><b>${metricFmt(rankBy, c[rankBy])}</b></div></td></tr>`;
@@ -431,6 +475,7 @@ tr:last-child td { border-bottom: 0; }
     // ranked bar chart (single series, one hue)
     const rows = ranked();
     $('#barTitle').textContent = metricLabel[rankBy] + ' by community';
+    $('#barHint').textContent = orderBy === 'rank' ? 'Sorted best to weakest' : 'Newest community at the top';
     $('#barBox').style.height = Math.max(220, rows.length * 30 + 40) + 'px';
     charts.bar = new Chart($('#barChart'), {
       type: 'bar',
@@ -468,9 +513,8 @@ tr:last-child td { border-bottom: 0; }
     if (!camps.length) { $('#campWrap').innerHTML = '<div class="empty">No campaigns in this period. Create links in the Link builder to start comparing communities.</div>'; return; }
     const commIds = [...new Set(camps.flatMap(c => Object.keys(c.cells)))];
     const comm = Object.fromEntries(data.communities.map(c => [c.id, c]));
-    // order communities by total clicks across campaigns, best first
-    const tot = id => camps.reduce((s, c) => s + ((c.cells[id] || {}).unique_clicks || 0), 0);
-    commIds.sort((a, b) => tot(b) - tot(a));
+    // columns: newest community first (left), then further back
+    commIds.sort((a, b) => newer(comm[a] || {}, comm[b] || {}) || String(comm[a]?.name || a).localeCompare(String(comm[b]?.name || b)));
     const val = (cell, id) => !cell ? null : campMetric === 'rate' ? (comm[id]?.members ? cell.unique_clicks / comm[id].members * 100 : 0) : cell[campMetric];
     const show = v => v == null ? '–' : campMetric === 'rate' ? dec(v) : fmt(v);
     const steps = ['--seq-1', '--seq-2', '--seq-3', '--seq-4', '--seq-5'];
@@ -514,7 +558,7 @@ tr:last-child td { border-bottom: 0; }
   // ---- link builder ----
   function renderCommChecks() {
     const checked = new Set([...document.querySelectorAll('#commChecks input:checked')].map(i => i.value));
-    $('#commChecks').innerHTML = communities.length ? communities.map(c => `<label><input type="checkbox" value="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="muted" style="font-size:12px">${c.member_count ? fmt(c.member_count) : ''}</span></label>`).join('')
+    $('#commChecks').innerHTML = communities.length ? communities.map(c => `<label><input type="checkbox" value="${esc(c.id)}" ${checked.has(c.id) ? 'checked' : ''}> ${esc(c.name)} <span class="muted" style="font-size:12px">${[c.member_count ? fmt(c.member_count) : '', c.born && c.born_source !== 'first_seen' ? new Date(c.born * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''].filter(Boolean).join(' · ')}</span></label>`).join('')
       : '<div class="muted">No communities yet. Add one below, or run the WhatsApp sync to import them automatically.</div>';
   }
   $('#selAll').onclick = () => { const boxes = [...document.querySelectorAll('#commChecks input')]; const all = boxes.every(b => b.checked); boxes.forEach(b => b.checked = !all); };
@@ -719,7 +763,7 @@ tr:last-child td { border-bottom: 0; }
   function renderGroups() {
     const list = shownGroups();
     $('#groupList').innerHTML = !ts.groups.list.length ? '<div class="muted">Groups appear here after the first sync.</div>' :
-      list.map(g => `<label><input type="checkbox" value="${esc(g.id)}" ${groupsSel.has(g.id) ? 'checked' : ''}> <span>${esc(g.name)} <span class="muted" style="font-size:12px">${fmt(g.members)} members${g.auto ? ' · suggested' : ''}</span></span></label>`).join('');
+      list.map(g => `<label><input type="checkbox" value="${esc(g.id)}" ${groupsSel.has(g.id) ? 'checked' : ''}> <span>${esc(g.name)} <span class="muted" style="font-size:12px">${fmt(g.members)} members${g.created ? ' · made ' + new Date(g.created * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}${g.auto ? ' · suggested' : ''}</span></span></label>`).join('');
     renderGroupCount();
   }
   function renderGroupCount() {

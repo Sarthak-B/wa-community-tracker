@@ -101,6 +101,27 @@ async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('').slice(0, 20);
 }
+// ---------- community age (newest first everywhere) ----------
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+// "18 OCT 2026 | 7:30 PM - 10 Minute Webinar" -> unix seconds for 18 Oct 2026 (IST midnight); null if no date in the name
+function dateFromName(name) {
+  const m = /(\d{1,2})\s*[-\/ ]?\s*([A-Za-z]{3})[A-Za-z]*\.?\s*[-\/ ,]?\s*(20\d{2})/.exec(String(name || ''));
+  if (!m || MONTHS[m[2].toLowerCase()] == null) return null;
+  const day = Number(m[1]);
+  if (day < 1 || day > 31) return null;
+  return Math.floor(Date.UTC(Number(m[3]), MONTHS[m[2].toLowerCase()], day) / 1000) - 330 * 60;
+}
+// best known "born" date: WhatsApp creation date > date in the group name > first time the tracker saw it
+function communityBorn(c) {
+  if (c.wa_created_at) return { born: c.wa_created_at, born_source: 'whatsapp' };
+  const d = dateFromName(c.name);
+  if (d) return { born: d, born_source: 'name' };
+  return { born: c.created_at || 0, born_source: 'first_seen' };
+}
+// a real date (WhatsApp or name) always beats "first seen", which says nothing about how new a community is
+const newestFirst = (a, b) => ((b.born_source !== 'first_seen') - (a.born_source !== 'first_seen')) || (b.born - a.born) || String(a.name).localeCompare(String(b.name));
+const validCreated = v => { const n = Math.floor(Number(v) || 0); return n > 1104537600 && n < now() + 86400 ? n : null; }; // after 2005, not in the future
+
 async function uniqueSlug(env, base) {
   let slug = base, n = 2;
   while (await env.DB.prepare('SELECT 1 FROM communities WHERE id = ?').bind(slug).first()) slug = `${base}-${n++}`;
@@ -150,8 +171,8 @@ function trackingScript(origin) {
 
 // ---------- communities & links ----------
 async function listCommunities(env) {
-  const { results } = await env.DB.prepare('SELECT id, name, wa_chat_id, member_count, updated_at FROM communities ORDER BY name').all();
-  return { communities: results };
+  const { results } = await env.DB.prepare('SELECT id, name, wa_chat_id, member_count, wa_created_at, created_at, updated_at FROM communities').all();
+  return { communities: results.map(c => ({ ...c, ...communityBorn(c) })).sort(newestFirst) };
 }
 async function addCommunity(body, env) {
   const name = String(body.name || '').trim();
@@ -233,17 +254,18 @@ async function ingest(body, env) {
   for (const c of body.communities || []) {
     if (!c.wa_chat_id || !c.name || chatToCommunity[c.wa_chat_id]) continue;
     let id = byChat.get(c.wa_chat_id) || byName.get(String(c.name).toLowerCase());
+    const created = validCreated(c.created);
     if (id) {
       byName.delete(String(c.name).toLowerCase());
       // name is refreshed too, so a community renamed on WhatsApp is renamed here
-      commStmts.push(env.DB.prepare('UPDATE communities SET name = ?, wa_chat_id = ?, member_count = ?, updated_at = ? WHERE id = ?')
-        .bind(String(c.name), c.wa_chat_id, Number(c.members) || 0, t, id));
+      commStmts.push(env.DB.prepare('UPDATE communities SET name = ?, wa_chat_id = ?, member_count = ?, wa_created_at = COALESCE(?, wa_created_at), updated_at = ? WHERE id = ?')
+        .bind(String(c.name), c.wa_chat_id, Number(c.members) || 0, created, t, id));
     } else {
       const base = slugify(c.name); id = base; let n = 2;
       while (usedIds.has(id)) id = `${base}-${n++}`;
       usedIds.add(id);
-      commStmts.push(env.DB.prepare('INSERT INTO communities (id, name, wa_chat_id, member_count, created_at, updated_at) VALUES (?,?,?,?,?,?)')
-        .bind(id, c.name, c.wa_chat_id, Number(c.members) || 0, t, t));
+      commStmts.push(env.DB.prepare('INSERT INTO communities (id, name, wa_chat_id, member_count, wa_created_at, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
+        .bind(id, c.name, c.wa_chat_id, Number(c.members) || 0, created, t, t));
     }
     chatToCommunity[c.wa_chat_id] = id;
   }
@@ -286,10 +308,13 @@ async function stats(url, env) {
   const tz = `${Number(env.TZ_OFFSET_MINUTES || 330)} minutes`;
   const q = (sql, ...args) => env.DB.prepare(sql).bind(...args).all().then(r => r.results);
 
-  const [communities, msgAgg, clickAgg, linkAgg, links, codeClicks, messages, dailyClicks, dailyMsgs, lastSync] = await Promise.all([
-    q('SELECT id, name, member_count, wa_chat_id FROM communities'),
+  const [communities, msgAgg, clickAgg, linkAgg, links, codeClicks, messages, dailyClicks, dailyMsgs, lastSync, groupsKv] = await Promise.all([
+    q('SELECT id, name, member_count, wa_chat_id, wa_created_at, created_at FROM communities'),
     q(`SELECT community_id, COUNT(*) AS messages, SUM(delivered) AS delivered, SUM(reads) AS reads,
-              SUM(reactions) AS reactions, SUM(replies) AS replies
+              SUM(reactions) AS reactions, SUM(replies) AS replies,
+              SUM(CASE WHEN link_codes IS NOT NULL AND link_codes != '' THEN 1 ELSE 0 END) AS link_posts,
+              SUM(CASE WHEN delivered > 0 THEN 1 ELSE 0 END) AS read_posts,
+              MAX(sent_at) AS last_post_at
        FROM messages WHERE sent_at >= ? GROUP BY community_id`, from),
     q(`SELECT l.community_id, COUNT(*) AS clicks, COUNT(DISTINCT k.visitor_hash) AS unique_clicks
        FROM clicks k JOIN links l ON l.code = k.code
@@ -305,13 +330,23 @@ async function stats(url, env) {
     q(`SELECT date(sent_at, 'unixepoch', ?) AS day, COUNT(*) AS messages, SUM(reads) AS reads
        FROM messages WHERE sent_at >= ? GROUP BY day ORDER BY day`, tz, from),
     env.DB.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').first(),
+    kvGet(env, 'groups', { list: [] }),
   ]);
 
-  const byId = Object.fromEntries(communities.map(c => [c.id, {
-    id: c.id, name: c.name, members: c.member_count || 0, connected: !!c.wa_chat_id,
-    messages: 0, delivered: 0, reads: 0, reactions: 0, replies: 0, clicks: 0, unique_clicks: 0, links: 0,
-  }]));
-  for (const r of msgAgg) Object.assign(byId[r.community_id] || {}, { messages: r.messages, delivered: r.delivered || 0, reads: r.reads || 0, reactions: r.reactions || 0, replies: r.replies || 0 });
+  // groups currently ticked for tracking (from the bot's last group list); also a source of creation dates
+  const groupInfo = new Map((groupsKv.list || []).map(g => [g.id, g]));
+  const byId = Object.fromEntries(communities.map(c => {
+    const g = c.wa_chat_id ? groupInfo.get(c.wa_chat_id) : null;
+    const born = communityBorn({ ...c, wa_created_at: c.wa_created_at || validCreated(g && g.created) });
+    return [c.id, {
+      id: c.id, name: c.name, members: c.member_count || 0, connected: !!c.wa_chat_id,
+      tracked: !!(g && g.tracked), ...born,
+      messages: 0, delivered: 0, reads: 0, reactions: 0, replies: 0, clicks: 0, unique_clicks: 0, links: 0,
+      link_posts: 0, read_posts: 0, last_post_at: null,
+    }];
+  }));
+  for (const r of msgAgg) Object.assign(byId[r.community_id] || {}, { messages: r.messages, delivered: r.delivered || 0, reads: r.reads || 0, reactions: r.reactions || 0, replies: r.replies || 0,
+    link_posts: r.link_posts || 0, read_posts: r.read_posts || 0, last_post_at: r.last_post_at || null });
   for (const r of clickAgg) Object.assign(byId[r.community_id] || {}, { clicks: r.clicks, unique_clicks: r.unique_clicks });
   for (const r of linkAgg) if (byId[r.community_id]) byId[r.community_id].links = r.links;
 
@@ -349,7 +384,7 @@ async function stats(url, env) {
 
   return {
     days, generated_at: now(), last_sync: lastSync || null,
-    communities: Object.values(byId),
+    communities: Object.values(byId).sort(newestFirst), // newest community first
     campaigns: Object.values(camp).sort((a, b) => b.created_at - a.created_at),
     messages: msgOut,
     daily_clicks: dailyClicks,
@@ -366,6 +401,10 @@ async function ensureSchema(env) {
   const cols = (await env.DB.prepare('PRAGMA table_info(links)').all()).results.map(r => r.name);
   if (cols.length && !cols.includes('deleted_at')) {
     try { await env.DB.prepare('ALTER TABLE links ADD COLUMN deleted_at INTEGER').run(); } catch (e) { /* added by a parallel request */ }
+  }
+  const ccols = (await env.DB.prepare('PRAGMA table_info(communities)').all()).results.map(r => r.name);
+  if (ccols.length && !ccols.includes('wa_created_at')) {
+    try { await env.DB.prepare('ALTER TABLE communities ADD COLUMN wa_created_at INTEGER').run(); } catch (e) { /* added by a parallel request */ }
   }
   schemaReady = true;
 }
@@ -405,10 +444,17 @@ async function botStatus(body, env) {
   if (status.stage === 'connected' || status.stage === 'done') await kvSet(env, 'linked', { linked: true, at: now() });
   if (status.stage === 'logged_out') await kvSet(env, 'linked', { linked: false, at: now() });
   if (Array.isArray(body.groups)) {
-    await kvSet(env, 'groups', {
-      at: now(),
-      list: body.groups.slice(0, 500).map(g => ({ id: String(g.id), name: String(g.name || ''), members: Number(g.members) || 0, auto: !!g.auto, tracked: !!g.tracked })),
-    });
+    const list = body.groups.slice(0, 500).map(g => ({ id: String(g.id), name: String(g.name || ''), members: Number(g.members) || 0, auto: !!g.auto, tracked: !!g.tracked, created: validCreated(g.created) }))
+      .sort((a, b) => (b.created || 0) - (a.created || 0)); // newest first in Choose groups
+    await kvSet(env, 'groups', { at: now(), list });
+    // backfill creation dates for every community already in the database, in one go (not only the groups read this run)
+    const created = new Map(list.filter(g => g.created).map(g => [g.id, g.created]));
+    if (created.size) {
+      const rows = (await env.DB.prepare('SELECT id, wa_chat_id, wa_created_at FROM communities WHERE wa_chat_id IS NOT NULL').all()).results;
+      const stmts = rows.filter(r => created.has(r.wa_chat_id) && r.wa_created_at !== created.get(r.wa_chat_id))
+        .map(r => env.DB.prepare('UPDATE communities SET wa_created_at = ? WHERE id = ?').bind(created.get(r.wa_chat_id), r.id));
+      for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+    }
   }
   return { ok: true };
 }

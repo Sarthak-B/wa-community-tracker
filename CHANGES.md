@@ -8,6 +8,8 @@
 - **Re-link during a running sync** is queued instead of ignored.
 - Short links work in any letter case; community names refresh when renamed on WhatsApp; a wrong saved password is cleared instead of sticking.
 
+- **Newest community first.** The bot reads and uploads the most recently made community first, then goes further back (uses the parent community's creation date). Safety net: a group not read for `STALE_HOURS` (default 24) goes first so older ones still get covered. The dashboard's group list is also shown newest first.
+
 ## Workflow
 - Uses the runner's preinstalled Chrome (no Chromium download each run; saves minutes). Falls back to downloading if missing.
 - Node 22, `actions/checkout@v5`, `actions/setup-node@v5`, `permissions: contents: read`.
@@ -16,3 +18,9 @@
 ## Config / docs
 - wrangler.toml: existing `SHORT_BASE`, `FALLBACK_URL` and database id kept; `GH_BRANCH` documented (commented); GH secrets listed. `wrangler.sb.toml` untouched.
 - README rewritten to match the code (6-hour schedule, link format, all settings, score, GitHub minutes, token expiry).
+
+# Changes (2026-10-28, later): newest communities first, fair scores for new ones
+- **Real community age.** The bot now uploads each community's WhatsApp creation date (`created`). The Worker stores it in the new `communities.wa_created_at` column (added to the live database automatically, no SQL to run). The first sync after deploying also backfills the date for every group in Choose groups, not only the ones read that run. Fallbacks: a date in the group name ("18 OCT 2026 | …"), then the date the tracker first saw it (always sorted last, since it says nothing about real age).
+- **Newest first everywhere:** leaderboard (new "Show: Newest community first / Best to weakest" switch, remembered per browser), bar chart, Campaigns columns, Messages community filter, Link builder ticks, Choose groups. The `#` column always keeps the performance rank.
+- **New communities are visible straight away:** any ticked community shows on the leaderboard even with no posts yet, with a "New · N days" tag for 7 days and "Started <date> · last post <date>" under its name.
+- **Fair score for new communities:** clicks per 100 members are divided by the number of tracked links, and replies + reactions per 100 members by the number of posts, so a 3-day-old community is not out-ranked just for having fewer posts. Fewer than 2 posts and 2 links in the period = "Too early to rank" (no score, never marked Needs attention).
